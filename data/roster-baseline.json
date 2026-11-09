@@ -1,0 +1,130 @@
+{
+  "55": {
+    "team_id": "55",
+    "team": "Power Rangers",
+    "account_ids": [
+      "194979527",
+      "294135421",
+      "295697470",
+      "363739653",
+      "1675898897"
+    ],
+    "observed_match_id": "9080101215",
+    "observed_start_time": 1794060548,
+    "observed_utc": "2026-11-07T14:09:08Z",
+    "source_url": "https://api.opendota.com/api/matches/9080101215",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10020555": {
+    "team_id": "10020555",
+    "team": "PlayTime",
+    "account_ids": [
+      "9403474",
+      "50580004",
+      "104334048",
+      "140297552",
+      "164962869"
+    ],
+    "observed_match_id": "9080891303",
+    "observed_start_time": 1794094890,
+    "observed_utc": "2026-11-07T23:41:30Z",
+    "source_url": "https://api.opendota.com/api/matches/9080891303",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10242397": {
+    "team_id": "10242397",
+    "team": "Xipto Esports",
+    "account_ids": [
+      "101259972",
+      "156328257",
+      "181716137",
+      "193815691",
+      "375507918"
+    ],
+    "observed_match_id": "9080292903",
+    "observed_start_time": 1794067811,
+    "observed_utc": "2026-11-07T16:10:11Z",
+    "source_url": "https://api.opendota.com/api/matches/9080292903",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10252232": {
+    "team_id": "10252232",
+    "team": "Zenith",
+    "account_ids": [
+      "135607261",
+      "164530809",
+      "248388120",
+      "250547284",
+      "903184860"
+    ],
+    "observed_match_id": "9080101215",
+    "observed_start_time": 1794060548,
+    "observed_utc": "2026-11-07T14:09:08Z",
+    "source_url": "https://api.opendota.com/api/matches/9080101215",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "5014799": {
+    "team_id": "5014799",
+    "team": "Nemiga Gaming",
+    "account_ids": [
+      "114162163",
+      "120840516",
+      "127530803",
+      "383788462",
+      "1220993352"
+    ],
+    "observed_match_id": "9080179621",
+    "observed_start_time": 1794063793,
+    "observed_utc": "2026-11-07T15:03:13Z",
+    "source_url": "https://api.opendota.com/api/matches/9080179621",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10212329": {
+    "team_id": "10212329",
+    "team": "Team Synapse",
+    "account_ids": [
+      "123717676",
+      "163061132",
+      "163152486",
+      "860264647",
+      "968545762"
+    ],
+    "observed_match_id": "9080233824",
+    "observed_start_time": 1794065863,
+    "observed_utc": "2026-11-07T15:37:43Z",
+    "source_url": "https://api.opendota.com/api/matches/9080233824",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10331884": {
+    "team_id": "10331884",
+    "team": "Froglings",
+    "account_ids": [
+      "81306398",
+      "126212866",
+      "152455523",
+      "262476000",
+      "326327879"
+    ],
+    "observed_match_id": "9080668008",
+    "observed_start_time": 1794081994,
+    "observed_utc": "2026-11-07T20:06:34Z",
+    "source_url": "https://api.opendota.com/api/matches/9080668008",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  },
+  "10271553": {
+    "team_id": "10271553",
+    "team": "potn9ki",
+    "account_ids": [
+      "296702734",
+      "297380131",
+      "993824087",
+      "1074436691",
+      "1302599438"
+    ],
+    "observed_match_id": "9080233824",
+    "observed_start_time": 1794065863,
+    "observed_utc": "2026-11-07T15:37:43Z",
+    "source_url": "https://api.opendota.com/api/matches/9080233824",
+    "status": "last_observed_not_confirmed_for_future_fixture"
+  }
+}

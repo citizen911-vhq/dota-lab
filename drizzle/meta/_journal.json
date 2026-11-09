@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794127413796,
+      "tag": "0000_sad_ghost_rider",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794130822414,
+      "tag": "0001_tired_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794192991102,
+      "tag": "0002_aberrant_millenium_guard",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {matchingEvents,quoteFromBoard,fetchOdds} from '../lib/dota-odds.ts';
+const now=Date.parse('2026-11-09T00:00:00Z');
+const f={team_a:'A',team_b:'B',scheduled_start_utc:new Date(now+3600000).toISOString(),market:'map_handicap',selection:'b',threshold:1.5};
+const e={id:1,home:'A',away:'B',date:f.scheduled_start_utc,status:'pending',esports:{game:{slug:'dota-2'},format:{type:'bestOf',games:3}}};
+const b={...e,bookmakers:{Book:[{name:'Spread',updatedAt:new Date(now-1000).toISOString(),odds:[{hdp:-1.5,home:'2.50',away:'1.50'}]}]}};
+test('exact event identity requires Dota, BO3, time and both teams',()=>{assert.equal(matchingEvents([e],f,now).length,1);for(const patch of [{status:'live'},{home:'A academy'},{esports:{}},{date:new Date(now+7200000).toISOString()}])assert.equal(matchingEvents([{...e,...patch}],f,now).length,0);});
+test('away spread sign reverses and wrong lines never match',()=>{assert.equal(quoteFromBoard(b,e,f,['Book'],now).decimal_odds,1.5);assert.equal(quoteFromBoard(b,e,{...f,threshold:-1.5},['Book'],now),null);});
+test('stale, ambiguous, mismatched and duration lines rejected',()=>{assert.equal(quoteFromBoard(b,e,{...f,market:'map_duration'},['Book'],now),null);assert.equal(quoteFromBoard({...b,id:2},e,f,['Book'],now),null);assert.equal(quoteFromBoard(b,e,f,['Book'],now+900001),null);const duplicate=structuredClone(b);duplicate.bookmakers.Book[0].odds.push(duplicate.bookmakers.Book[0].odds[0]);assert.equal(quoteFromBoard(duplicate,e,f,['Book'],now),null);});
+test('kills require first map and exact half line',()=>{const board={...e,bookmakers:{Book:[{name:'1st Map Total Kills',updatedAt:new Date(now).toISOString(),odds:[{hdp:39.5,over:'1.8',under:'2'}]}]}};const kills={...f,market:'map_kills',map_number:1,threshold:39.5,selection:'over'};assert.equal(quoteFromBoard(board,e,kills,['Book'],now).decimal_odds,1.8);assert.equal(quoteFromBoard(board,e,{...kills,map_number:2},['Book'],now),null);});
+test('provider errors never leak key, retry or follow redirects',async()=>{let count=0;await assert.rejects(fetchOdds('events',{},'secret-test',async(url,opts)=>{count++;assert.equal(opts.redirect,'error');throw Error(String(url));}),error=>!error.message.includes('secret-test'));assert.equal(count,1);await assert.rejects(fetchOdds('events',{},'secret-test',async()=>new Response('',{status:429})),/429/);});

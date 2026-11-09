@@ -1,0 +1,377 @@
+{
+  "captured_at": "2026-11-09T05:53:43Z",
+  "note": "Historical provider response for offline parser tests only. Never import as a current quote.",
+  "event": {
+    "id": "dota2:froglings-synapse:2026-11-09",
+    "sport_key": "dota2",
+    "sport_title": "Dota 2",
+    "commence_time": "2026-11-09T10:00:00.000Z",
+    "is_live": false,
+    "status": "scheduled",
+    "home_team": "Team Synapse",
+    "away_team": "Froglings",
+    "tournament": {
+      "key": "dota_2_dreamleague_division_2",
+      "title": "DreamLeague Division 2"
+    },
+    "bookmakers": [
+      {
+        "key": "1xbet",
+        "title": "1xBet",
+        "link": "https://1xbet.ng/en/line/esports/2914812-dota-2-dreamleague-division-2/769298782-froglings-team-synapse",
+        "last_update": "2026-11-09T05:52:20+00:00",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-09T05:52:20+00:00",
+            "outcomes": [
+              {
+                "name": "Froglings",
+                "price": 1.54
+              },
+              {
+                "name": "Team Synapse",
+                "price": 2.36
+              }
+            ]
+          },
+          {
+            "key": "maps_handicap",
+            "last_update": "2026-11-09T05:52:20+00:00",
+            "outcomes": [
+              {
+                "name": "Froglings",
+                "price": 2.48,
+                "point": -1.5,
+                "main": true
+              },
+              {
+                "name": "Team Synapse",
+                "price": 1.47,
+                "point": 1.5,
+                "main": true
+              },
+              {
+                "name": "Froglings",
+                "price": 1.2,
+                "point": 1.5,
+                "main": false
+              },
+              {
+                "name": "Team Synapse",
+                "price": 4.08,
+                "point": -1.5,
+                "main": false
+              }
+            ]
+          },
+          {
+            "key": "h2h",
+            "period": "map1",
+            "last_update": "2026-11-09T05:52:20+00:00",
+            "outcomes": [
+              {
+                "name": "Froglings",
+                "price": 1.63
+              },
+              {
+                "name": "Team Synapse",
+                "price": 2.16
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "unmatched_bookmakers": [
+      "4casters",
+      "888sport",
+      "bet105",
+      "bet365",
+      "betfair",
+      "betmgm",
+      "betonline",
+      "betr",
+      "betrivers",
+      "betus",
+      "bovada",
+      "caesars",
+      "circa",
+      "cloudbet",
+      "draftkings",
+      "fanatics",
+      "fanaticsmarkets",
+      "fanduel",
+      "fliff",
+      "ladbrokes",
+      "lowvig",
+      "matchbook",
+      "novig",
+      "pinnacle",
+      "prizepicks",
+      "prophetx",
+      "rebet",
+      "sbobet",
+      "shuffle",
+      "skybet",
+      "sportbet",
+      "stake",
+      "thescore",
+      "underdog",
+      "williamhill"
+    ]
+  },
+  "kills_event": {
+    "id": "dota2:nemiga-powerrangers:2026-11-09",
+    "sport_key": "dota2",
+    "sport_title": "Dota 2",
+    "commence_time": "2026-11-09T10:00:00.000Z",
+    "is_live": false,
+    "status": "scheduled",
+    "home_team": "Power Rangers",
+    "away_team": "Nemiga Gaming",
+    "tournament": {
+      "key": "dota_2_dreamleague_division_2",
+      "title": "DreamLeague Division 2"
+    },
+    "bookmakers": [
+      {
+        "key": "stake",
+        "title": "Stake",
+        "link": "https://stake.com/sports/dota-2/international-2/dreamleague-division-2-series-5-t8/1794218400000-power-rangers-nemiga-gaming",
+        "last_update": "2026-11-09T05:53:30+00:00",
+        "markets": [
+          {
+            "key": "h2h",
+            "last_update": "2026-11-09T05:53:30+00:00",
+            "outcomes": [
+              {
+                "name": "Nemiga Gaming",
+                "price": 3.3
+              },
+              {
+                "name": "Power Rangers",
+                "price": 1.28
+              }
+            ]
+          },
+          {
+            "key": "maps_handicap",
+            "last_update": "2026-11-09T05:53:30+00:00",
+            "outcomes": [
+              {
+                "name": "Nemiga Gaming",
+                "price": 1.78,
+                "point": 1.5,
+                "main": true
+              },
+              {
+                "name": "Power Rangers",
+                "price": 1.92,
+                "point": -1.5,
+                "main": true
+              },
+              {
+                "name": "Nemiga Gaming",
+                "price": 6.3,
+                "point": -1.5,
+                "main": false
+              },
+              {
+                "name": "Power Rangers",
+                "price": 1.08,
+                "point": 1.5,
+                "main": false
+              }
+            ]
+          },
+          {
+            "key": "h2h",
+            "period": "map1",
+            "last_update": "2026-11-09T05:53:30+00:00",
+            "outcomes": [
+              {
+                "name": "Nemiga Gaming",
+                "price": 2.8
+              },
+              {
+                "name": "Power Rangers",
+                "price": 1.38
+              }
+            ]
+          },
+          {
+            "key": "kills_total",
+            "period": "map1",
+            "last_update": "2026-11-09T05:53:30+00:00",
+            "outcomes": [
+              {
+                "name": "Over",
+                "price": 1.78,
+                "point": 52.5,
+                "main": true
+              },
+              {
+                "name": "Under",
+                "price": 1.78,
+                "point": 52.5,
+                "main": true
+              },
+              {
+                "name": "Over",
+                "price": 1.7,
+                "point": 51.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.88,
+                "point": 51.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.88,
+                "point": 53.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.7,
+                "point": 53.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.62,
+                "point": 50.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.98,
+                "point": 50.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.98,
+                "point": 54.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.62,
+                "point": 54.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 2.05,
+                "point": 55.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.58,
+                "point": 55.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.55,
+                "point": 49.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 2.1,
+                "point": 49.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.48,
+                "point": 48.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 2.25,
+                "point": 48.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 2.25,
+                "point": 56.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.48,
+                "point": 56.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 2.3,
+                "point": 57.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 1.45,
+                "point": 57.5,
+                "main": false
+              },
+              {
+                "name": "Over",
+                "price": 1.42,
+                "point": 47.5,
+                "main": false
+              },
+              {
+                "name": "Under",
+                "price": 2.4,
+                "point": 47.5,
+                "main": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "unmatched_bookmakers": [
+      "4casters",
+      "888sport",
+      "bet105",
+      "bet365",
+      "betfair",
+      "betmgm",
+      "betr",
+      "betrivers",
+      "bovada",
+      "caesars",
+      "circa",
+      "draftkings",
+      "fanatics",
+      "fanaticsmarkets",
+      "fanduel",
+      "fliff",
+      "ladbrokes",
+      "lowvig",
+      "matchbook",
+      "novig",
+      "prizepicks",
+      "prophetx",
+      "rebet",
+      "sbobet",
+      "skybet",
+      "sportbet",
+      "thescore",
+      "underdog",
+      "williamhill"
+    ]
+  }
+}
