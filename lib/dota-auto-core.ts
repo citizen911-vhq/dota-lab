@@ -1,4 +1,4 @@
-import type { AnalysisHistory, AnalysisMap, AnalysisSeries, FixtureInput } from './dota-analysis-types';
+import type { AnalysisHistory, AnalysisMap, AnalysisSeries, FixtureInput, RosterConfirmation } from './dota-analysis-types';
 import type { NormalizedMatch } from './dota-opendota';
 import type { Forecast, Journal, Observation } from './dota-types';
 import { invariant, latestObservations, validSource } from './dota-core';
@@ -10,9 +10,38 @@ const excludedRemakes = new Set(['9074604699','9044544461','9074615771']);
 const validScores = new Set(['2:0','2:1','1:2','0:2']);
 const knownTeam = (id: unknown): id is string => typeof id==='string' && Object.hasOwn(TEAM_NAMES,id);
 const validAccounts = (accounts: (number|string)[]) => accounts.length===5 && new Set(accounts.map(String)).size===5 && accounts.every(id=>/^[1-9]\d*$/.test(String(id))&&Number.isSafeInteger(Number(id))&&Number(id)<4294967295);
+const validPatch = (value: unknown): value is string => typeof value==='string' && /^(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value));
+
+function checkedRoster(value: unknown, now: number): RosterConfirmation {
+  invariant(!!value && typeof value==='object' && !Array.isArray(value),'Нужно подтверждение состава команды.');
+  const roster=value as RosterConfirmation;
+  invariant(Array.isArray(roster.account_ids) && roster.account_ids.every(id=>typeof id==='number') && validAccounts(roster.account_ids),'Нужны пять различных публичных account_id состава.');
+  const verified=Date.parse(roster.verified_at);
+  invariant(Number.isFinite(verified) && verified<=now && verified>=now-6*3600000,'Подтверждение состава должно быть не старше шести часов и не из будущего.');
+  invariant(typeof roster.has_standin==='boolean','Нужно явно указать наличие или отсутствие замены.');
+  invariant(validSource(roster.source_url) && new URL(roster.source_url).protocol==='https:' && ['cyberscore.live','www.cyberscore.live','liquipedia.net'].includes(new URL(roster.source_url).hostname),'Нужна HTTPS-ссылка на подтверждение состава в CyberScore или Liquipedia.');
+  return {account_ids:[...roster.account_ids].sort((a,b)=>a-b),verified_at:new Date(verified).toISOString(),source_url:roster.source_url,has_standin:roster.has_standin};
+}
 
 function matchFacts(m:NormalizedMatch): string {
   return JSON.stringify([m.id,m.start_time,m.end_time,m.duration_seconds,m.radiant_team_id,m.dire_team_id,m.radiant_kills,m.dire_kills,m.radiant_win,m.league_id,m.series_id,m.series_type]);
+}
+
+/** Enrich missing provider context while keeping original score evidence stable. */
+export function mergeMatchEvidence(old:NormalizedMatch,incoming:NormalizedMatch):NormalizedMatch {
+  const conflict=matchFacts(old)!==matchFacts(incoming) ||
+    (old.patch_id!=null && incoming.patch_id!=null && old.patch_id!==incoming.patch_id) ||
+    (['radiant','dire'] as const).some(side=>{
+      const a=old.players[side],b=incoming.players[side];
+      return a.length>0 && b.length>0 && !a.every(id=>b.includes(id)) && !b.every(id=>a.includes(id));
+    });
+  if(conflict)return {...old,context_conflict:old.context_conflict??'Противоречие повторной проверки карты, патча или состава.'};
+  return {...old,patch_id:old.patch_id??incoming.patch_id??null,
+    players:{radiant:validAccounts(incoming.players.radiant)&&!validAccounts(old.players.radiant)?incoming.players.radiant:old.players.radiant,
+      dire:validAccounts(incoming.players.dire)&&!validAccounts(old.players.dire)?incoming.players.dire:old.players.dire},
+    sources:[...new Set([...old.sources,...incoming.sources])],
+    ...(incoming.context_conflict?{context_conflict:old.context_conflict??incoming.context_conflict}:{}),
+  };
 }
 
 /** Repeated discovery is harmless; conflicting copies are not usable evidence. */
@@ -26,6 +55,7 @@ function distinctMatches(matches:NormalizedMatch[],now=Date.now()): NormalizedMa
     const old=unique.get(m.id);
     if(old&&matchFacts(old)!==matchFacts(m))conflicts.add(m.id);
     else if(!old)unique.set(m.id,m);
+    else unique.set(m.id,mergeMatchEvidence(old,m));
   }
   return [...unique.values()].filter(m=>!conflicts.has(m.id));
 }
@@ -52,7 +82,14 @@ export function checkedFixture(input: unknown, now=Date.now()): FixtureInput {
   invariant(Number.isFinite(verified) && verified<=now && verified>=now-6*3600000,'Подтверждение расписания должно быть не старше шести часов и не из будущего.');
   invariant(validSource(f.source_url) && new URL(f.source_url).protocol==='https:' && allowedSources.has(new URL(f.source_url).hostname),'Используйте HTTPS-ссылку на CyberScore, Liquipedia или открытый календарь Haglund.');
   invariant(!f.provider_id || typeof f.provider_id==='string' && f.provider_id.length<=160,'Некорректный ID расписания.');
-  return {team_a_id:f.team_a_id,team_b_id:f.team_b_id,scheduled_start_utc:new Date(start).toISOString(),source_url:f.source_url,best_of:3,status:'scheduled',verified_at:new Date(verified).toISOString(),...(f.provider_id?{provider_id:f.provider_id}:{}),...(f.league_id?{league_id:String(f.league_id)}:{}),...(f.league?{league:String(f.league).slice(0,200)}:{})};
+  invariant(f.patch_id===undefined || validPatch(f.patch_id),'Некорректный подтверждённый ID патча.');
+  let rosters: FixtureInput['rosters'];
+  if(f.rosters!==undefined) {
+    invariant(!!f.rosters && typeof f.rosters==='object' && !Array.isArray(f.rosters),'Нужны подтверждённые составы обеих команд.');
+    rosters={team_a:checkedRoster(f.rosters.team_a,now),team_b:checkedRoster(f.rosters.team_b,now)};
+    invariant(!rosters.team_a.account_ids.some(id=>rosters!.team_b.account_ids.includes(id)),'Один игрок не может входить в оба состава предстоящей серии.');
+  }
+  return {team_a_id:f.team_a_id,team_b_id:f.team_b_id,scheduled_start_utc:new Date(start).toISOString(),source_url:f.source_url,best_of:3,status:'scheduled',verified_at:new Date(verified).toISOString(),...(f.provider_id?{provider_id:f.provider_id}:{}),...(f.league_id?{league_id:String(f.league_id)}:{}),...(f.league?{league:String(f.league).slice(0,200)}:{}),...(f.patch_id!==undefined?{patch_id:f.patch_id}:{}),...(rosters?{rosters}:{})};
 }
 
 export function knownFixture(f:FixtureInput,forecasts:Forecast[]): Forecast|undefined {
@@ -64,9 +101,25 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
   const rows=new Map(seed.maps.map(m=>[`${m.team_id}:${m.match_id}`,m]));
   for(const m of distinctMatches(matches,now)) for(const radiant of [true,false]) {
     const id=radiant?m.radiant_team_id:m.dire_team_id,opponent=radiant?m.dire_team_id:m.radiant_team_id;
-    if(!knownTeam(id))continue;
-    const row:AnalysisMap={team_id:id,team:TEAM_NAMES[id],opponent_team_id:opponent,opponent:TEAM_NAMES[opponent]??`Team ${opponent}`,match_id:m.id,start_time:m.start_time,duration_seconds:m.duration_seconds,team_kills:radiant?m.radiant_kills:m.dire_kills,opponent_kills:radiant?m.dire_kills:m.radiant_kills,win:radiant?m.radiant_win:!m.radiant_win,league_id:m.league_id,series_id:m.series_id===null?null:String(m.series_id),series_type:m.series_type,series_key:m.series_id===null?null:`${m.league_id}:${m.series_id}`,players:(radiant?m.players.radiant:m.players.dire).map(Number),sources:m.sources,forecast_sample:true,verified_at:new Date(now).toISOString()};
-    if(!rows.has(`${id}:${m.id}`))rows.set(`${id}:${m.id}`,row);
+    const row:AnalysisMap={team_id:id,team:TEAM_NAMES[id]??`Team ${id}`,opponent_team_id:opponent,opponent:TEAM_NAMES[opponent]??`Team ${opponent}`,match_id:m.id,start_time:m.start_time,duration_seconds:m.duration_seconds,team_kills:radiant?m.radiant_kills:m.dire_kills,opponent_kills:radiant?m.dire_kills:m.radiant_kills,win:radiant?m.radiant_win:!m.radiant_win,league_id:m.league_id,series_id:m.series_id===null?null:String(m.series_id),series_type:m.series_type,series_key:m.series_id===null?null:`${m.league_id}:${m.series_id}`,patch_id:validPatch(m.patch_id)?m.patch_id:null,players:(radiant?m.players.radiant:m.players.dire).map(Number),sources:m.sources,forecast_sample:true,verified_at:new Date(now).toISOString()};
+    const key=`${id}:${m.id}`,old=rows.get(key);
+    if(m.context_conflict){row.forecast_sample=false;row.series_excluded_reason=m.context_conflict;}
+    if(!old)rows.set(key,row);
+    else {
+      const oldPlayers=old.players??[],newPlayers=row.players??[];
+      const playerConflict=oldPlayers.length>0 && newPlayers.length>0 && !oldPlayers.every(account=>newPlayers.includes(account)) && !newPlayers.every(account=>oldPlayers.includes(account));
+      const conflict=!!m.context_conflict || analysisFacts(old)!==analysisFacts(row) ||
+        (old.patch_id!=null && row.patch_id!=null && old.patch_id!==row.patch_id) || playerConflict ||
+        (old.series_id!=null && row.series_id!=null && old.series_id!==row.series_id);
+      if(conflict) {
+        // Preserve the original audited evidence; quarantine it for modelling.
+        rows.set(key,{...old,forecast_sample:false,series_excluded_reason:old.series_excluded_reason??'Противоречие повторной проверки карты, патча или состава.'});
+      } else {
+        const patch=old.patch_id??row.patch_id;
+        const enrichedPlayers=validAccounts(newPlayers) && !validAccounts(oldPlayers)?newPlayers:old.players;
+        if(patch!==old.patch_id || enrichedPlayers!==old.players)rows.set(key,{...old,patch_id:patch,players:enrichedPlayers,sources:[...new Set([...old.sources,...row.sources])],verified_at:new Date(now).toISOString()});
+      }
+    }
   }
   // A listing can omit a map. Only a verified official result and its explicit
   // first-map ID allow a newly collected series into the BO3 sample.
@@ -87,6 +140,11 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
       const id=side?b:a,opponent=side?a:b;
       const s:AnalysisSeries={series_key:first.series_key,team_id:id,team:TEAM_NAMES[id],opponent_team_id:opponent,opponent:TEAM_NAMES[opponent],start_time:group[0].start_time,end_time:group.at(-1)!.start_time+group.at(-1)!.duration_seconds,score_team:o.series_score[side],score_opponent:o.series_score[1-side],map_ids:group.map(m=>m.match_id),complete_bo3:true,forecast_sample:true,sources:[...new Set([...o.sources,...group.flatMap(m=>m.sources)])],verified_at:o.recorded_utc};
       if(!series.has(`${id}:${s.series_key}`))series.set(`${id}:${s.series_key}`,s);
+      for(const [index,map] of group.entries()) {
+        const key=`${id}:${map.match_id}`,existing=rows.get(key);
+        if(existing && (existing.map_number==null || existing.map_number===index+1))rows.set(key,{...existing,map_number:index+1});
+        else if(existing)rows.set(key,{...existing,forecast_sample:false,series_excluded_reason:existing.series_excluded_reason??'Противоречивый номер карты в подтверждённой серии.'});
+      }
     }
   }
   return {...seed,maps:[...rows.values()],series:[...series.values()]};
@@ -214,12 +272,16 @@ export function mergeVerifiedSeries(history:AnalysisHistory,incoming:AnalysisSer
       }
     }
   }
-  const mapKeys=new Map<string,string>();
+  const mapKeys=new Map<string,string>(),mapNumbers=new Map<string,number>();
   for(const s of incoming)for(const id of s.map_ids) {
     invariant(!mapKeys.has(id)||mapKeys.get(id)===s.series_key,'Одна карта не может принадлежать двум сериям.');
     mapKeys.set(id,s.series_key);
+    const position=s.map_ids.indexOf(id)+1;
+    invariant(!mapNumbers.has(id)||mapNumbers.get(id)===position,'Подтверждения содержат разный порядок карт.');
+    invariant(history.maps.filter(m=>m.match_id===id).every(m=>m.map_number==null||m.map_number===position),'Нельзя переписать ранее подтверждённый номер карты.');
+    mapNumbers.set(id,position);
   }
   const series=new Map(history.series.map(s=>[`${s.team_id}:${s.series_key}`,s]));
   for(const s of incoming)if(!series.has(`${s.team_id}:${s.series_key}`))series.set(`${s.team_id}:${s.series_key}`,s);
-  return {...history,maps:history.maps.map(m=>!m.series_key&&mapKeys.has(m.match_id)?{...m,series_key:mapKeys.get(m.match_id)!}:m),series:[...series.values()]};
+  return {...history,maps:history.maps.map(m=>mapKeys.has(m.match_id)?{...m,series_key:m.series_key??mapKeys.get(m.match_id)!,map_number:mapNumbers.get(m.match_id)!}:m),series:[...series.values()]};
 }

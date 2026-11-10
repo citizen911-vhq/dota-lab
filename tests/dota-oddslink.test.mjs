@@ -36,12 +36,12 @@ test('kills require exact first-map half-line and direction; duration rejected',
  for(const p of [{period:'full'},{period:'map2'},{key:'maps_total'},{period:undefined}])assert.equal(oddsLinkQuote(line(p),k,now),null);
  for(const p of [{threshold:44.5},{selection:'under'},{map_number:2},{market:'map_duration'},{selection:'over_or_equal'}])assert.equal(oddsLinkQuote(line(),{...k,...p},now),null);
 });
-test('series winner does not pick map winner, book priority independent of price',()=>{
+test('series winner does not pick map winner and chooses the highest fresh exact price',()=>{
  const winner={...f,market:'series_winner',selection:'b',threshold:null};
  const q=oddsLinkQuote(e,winner,now);assert.equal(q.decimal_odds,1.54);
  const b=structuredClone(e);for(const m of b.bookmakers[0].markets)m.period='map1';assert.equal(oddsLinkQuote(b,winner,now),null);
  const alternative=structuredClone(e.bookmakers[0]);alternative.key='thunderpick';for(const m of alternative.markets)for(const o of m.outcomes)o.price=10;
- assert.equal(oddsLinkQuote({...e,bookmakers:[alternative,...e.bookmakers]},winner,now).decimal_odds,1.54);
+ assert.equal(oddsLinkQuote({...e,bookmakers:[alternative,...e.bookmakers]},winner,now).decimal_odds,10);
 });
 test('coverage reports stale line as absent',()=>{assert.equal(oddsLinkCoverage([e],now).fresh_events,1);assert.equal(oddsLinkCoverage([e],now+1800000).fresh_events,0);});
 test('transport is one no-key request, decimal explicitly requested, redirects and 429 not retried',async()=>{

@@ -5,6 +5,7 @@ import { registerHooks } from 'node:module';
 // Production uses the bundler's extensionless imports; Node's TS loader needs the extension.
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === './dota-core' && context.parentURL?.endsWith('/dota-paper-core.ts')) return nextResolve('./dota-core.ts', context);
+  if (specifier === './dota-value' && context.parentURL?.endsWith('/dota-paper-core.ts')) return nextResolve('./dota-value.ts', context);
   return nextResolve(specifier, context);
 } });
 const { defaultPaperSettings, paperDashboard, validatePaperSettings, validateQuote, validateBet } = await import('../lib/dota-paper-core.ts');
@@ -180,13 +181,13 @@ test('server timestamps and snapshots override client supplied values', () => {
   assert.equal(b.odds_snapshot, 2);
 });
 
-test('quote age is measured from observation, with a strict fifteen minute maximum', () => {
+test('quote age is measured from book observation, with a strict ten minute maximum', () => {
   const f = forecast('a'), q = quote(f);
-  assert.doesNotThrow(() => bet(f, q, 1, at(2.25)));
-  assert.throws(() => bet(f, q, 1, at(2.25) + 1), /15 минут/);
+  assert.doesNotThrow(() => bet(f, q, 1, at(2 + 1/6)));
+  assert.throws(() => bet(f, q, 1, at(2 + 1/6) + 1), /10 минут/);
   assert.throws(() => bet(f, { ...q, recorded_utc: iso(2.5) }, 1), /до ставки/);
   assert.throws(() => quote(f, { observed_utc: iso(2.1) }), /будущем/);
-  assert.throws(() => quote(f, { observed_utc: iso(0.5) }), /после регистрации/);
+  assert.doesNotThrow(() => quote(f, { observed_utc: iso(0.5) }));
 });
 
 test('odds, money, explicit time zones, and source provenance are validated', () => {

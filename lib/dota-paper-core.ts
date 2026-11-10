@@ -1,8 +1,9 @@
 import { invariant, latestObservations, settle } from './dota-core';
 import type { Forecast, Market, Observation, Status } from './dota-types';
 import type { OddsQuote, PaperBet, PaperBetView, PaperCurvePoint, PaperDashboard, PaperMarketSummary, PaperSettings } from './dota-paper-types';
+import { evaluateValue, ODDS_REFRESH_MS, valuePolicy, VALUE_POLICY_VERSION } from './dota-value';
 
-export const QUOTE_MAX_AGE_MS = 15 * 60 * 1000;
+export const QUOTE_MAX_AGE_MS = ODDS_REFRESH_MS;
 const MAX_MONEY = 1_000_000;
 const MARKETS: Market[] = ['map_handicap', 'series_winner', 'map_kills', 'map_duration'];
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -77,7 +78,8 @@ export function validateQuote(value: unknown, forecast: Forecast | undefined, no
   invariant(date(value.observed_utc), 'Укажите время получения коэффициента с часовым поясом.');
   const observed = Date.parse(value.observed_utc);
   invariant(observed <= now, 'Время получения коэффициента не может быть в будущем.');
-  invariant(observed >= Date.parse(forecast.created_utc), 'Коэффициент должен быть получен после регистрации прогноза.');
+  // A book may have confirmed an unchanged price shortly before forecast creation.
+  // Keep that real timestamp; recording and placing must happen after the forecast.
   invariant(httpsSource(value.source_url), 'Нужна HTTPS-ссылка на источник без логина и пароля.');
   invariant(value.entry_method === 'manual' || value.entry_method === 'agent', 'Некорректный способ записи коэффициента.');
   if (value.source_market_label != null) invariant(text(value.source_market_label, 500), 'Укажите название рынка длиной до 500 символов.');
@@ -90,7 +92,7 @@ export function validateQuote(value: unknown, forecast: Forecast | undefined, no
 }
 
 /** The API must also check current observations, uniqueness, and available bank under its write lease. */
-export function validateBet(value: unknown, quote: OddsQuote | undefined, forecast: Forecast | undefined, now = Date.now()): PaperBet {
+export function validateBet(value: unknown, quote: OddsQuote | undefined, forecast: Forecast | undefined, now = Date.now(), historical = false): PaperBet {
   validNow(now);
   invariant(object(value), 'Виртуальная ставка должна быть объектом.');
   futureForecast(forecast, now);
@@ -99,15 +101,25 @@ export function validateBet(value: unknown, quote: OddsQuote | undefined, foreca
     'Ставка, коэффициент и прогноз должны относиться к одному событию.');
   invariant(date(quote.observed_utc) && date(quote.recorded_utc), 'Некорректное время коэффициента.');
   const observed = Date.parse(quote.observed_utc);
-  invariant(observed >= Date.parse(forecast.created_utc) && observed <= Date.parse(quote.recorded_utc) && Date.parse(quote.recorded_utc) <= now,
+  invariant(Date.parse(quote.recorded_utc) >= Date.parse(forecast.created_utc) && observed <= Date.parse(quote.recorded_utc) && Date.parse(quote.recorded_utc) <= now,
     'Коэффициент должен быть зарегистрирован до ставки.');
-  invariant(now - observed <= QUOTE_MAX_AGE_MS, 'Коэффициент старше 15 минут: зафиксируйте новую котировку.');
+  const maxAge = historical && value.policy_version == null ? 15 * 60_000 : QUOTE_MAX_AGE_MS;
+  invariant(now - observed <= maxAge, 'Коэффициент устарел: для новой ставки нужна цена не старше 10 минут.');
   const stake = minorUnits(value.stake, 'Виртуальная ставка');
   const odds = oddsUnits(quote.decimal_odds);
+  const policyFields: Partial<PaperBet> = {};
+  if (value.policy_version != null) {
+    invariant(value.policy_version === VALUE_POLICY_VERSION && object(value.policy_snapshot), 'Некорректная версия политики ставки.');
+    const policy = valuePolicy({ PAPER_MIN_ODDS: String(value.policy_snapshot.min_odds), PAPER_MIN_EV: String(value.policy_snapshot.min_ev), PAPER_PROBABILITY_RESERVE: String(value.policy_snapshot.probability_reserve) });
+    const evaluated = evaluateValue(forecast.probability, odds / 10000, policy);
+    invariant(evaluated.eligible, evaluated.reason ?? 'Недостаточная ожидаемая доходность.');
+    Object.assign(policyFields, { policy_version: VALUE_POLICY_VERSION, policy_snapshot: policy, expected_value_snapshot: evaluated.expected_value, conservative_ev_snapshot: evaluated.conservative_ev });
+  }
   return {
     bet_id: value.bet_id, forecast_id: forecast.forecast_id, quote_id: quote.quote_id,
     stake: units(stake), placed_utc: new Date(now).toISOString(),
     probability_snapshot: forecast.probability, odds_snapshot: odds / 10000,
+    ...policyFields,
   };
 }
 
@@ -162,7 +174,7 @@ export function paperDashboard(settings: PaperSettings, quotes: OddsQuote[], bet
   for (const bet of bets) {
     invariant(date(bet.placed_utc), 'Некорректное время ставки.');
     invariant(Date.parse(bet.placed_utc) >= Date.parse(settings.created_utc), 'Ставка не может предшествовать созданию виртуального банка.');
-    const checked = validateBet(bet, quoteMap.get(bet.quote_id), forecastMap.get(bet.forecast_id), Date.parse(bet.placed_utc));
+    const checked = validateBet(bet, quoteMap.get(bet.quote_id), forecastMap.get(bet.forecast_id), Date.parse(bet.placed_utc), true);
     invariant(checked.probability_snapshot === bet.probability_snapshot && checked.odds_snapshot === bet.odds_snapshot, 'Снимок вероятности или коэффициента ставки изменён.');
   }
   const activeBets = bets.filter(b => Date.parse(b.placed_utc) <= now);

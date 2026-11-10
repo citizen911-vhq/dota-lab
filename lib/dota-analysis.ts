@@ -1,5 +1,5 @@
 import type { Forecast, Market } from './dota-types';
-import type { AnalysisHistory, AnalysisMap, AnalysisSeries, FixtureInput, ForecastBuild, TeamSample, TrackedTeam } from './dota-analysis-types';
+import type { AnalysisHistory, AnalysisMap, AnalysisSeries, FixtureInput, ForecastBuild, TeamSample, TrackedTeam, RosterConfirmation, TeamRating, MatchupAnalysis, HeadToHeadSummary } from './dota-analysis-types';
 
 export const TRACKED_TEAMS: TrackedTeam[] = [
   {id:'55',name:'Power Rangers',reference_roster:[295697470,194979527,294135421,363739653,1675898897],scope_note:'История тега; состав по всем 30 картам не подтверждён как неизменный.'},
@@ -12,9 +12,12 @@ export const TRACKED_TEAMS: TrackedTeam[] = [
   {id:'10271553',name:'potn9ki',reference_roster:[1074436691,1302599438,993824087,297380131,296702734],scope_note:'История тега; спорный административный результат с HellNight исключён из статистики BO3.'},
 ];
 
-export const ANALYSIS_LIMITATION = 'Экспериментальная базовая оценка, ещё не проверенная на будущих матчах. До 30 последних доступных подтверждённых карт; полнота источника не гарантирована. Не учтены сила соперников, драфт, сторона, патч и номер карты. Тоталы относятся к первой карте, обучающая выборка включает карты всех номеров. Состав на будущий матч не гарантирован.';
+export const ANALYSIS_LIMITATION = 'Экспериментальная оценка: до 30 доступных карт текущего патча с подтверждённым одинаковым составом. Elo учитывает соперников; вероятность BO3 предполагает одинаковую независимую вероятность каждой карты. Тоталы используют только подтверждённые первые карты. Прошлые патчи — только справка, их вес в прогнозе равен нулю. Драфт и сторона не учтены. Прогноз не гарантирует прибыль; ставки отбираются отдельно по ожидаемой выгоде.';
 export const EXPERIMENT_FIRST_DAY = '2026-11-08';
 export const EXPERIMENT_LAST_DAY = '2026-12-07';
+export const ROSTER_MAX_AGE_MS = 6 * 3600000;
+export const MIN_BETTING_MAPS = 1;
+export const MIN_TOTAL_MAPS = 1;
 const validScores = new Set(['2:0','2:1','1:2','0:2']);
 const rosterKey = (players: number[]) => [...players].sort((a,b)=>a-b).join(',');
 const hasRoster = (players?: number[]) => !!players && players.length === 5 && new Set(players).size === 5 && players.every(n => Number.isSafeInteger(n) && n > 0);
@@ -34,10 +37,10 @@ function validMap(m: AnalysisMap): boolean {
 
 function mapFacts(m: AnalysisMap): string {
   // Discovery endpoints may attach different source URLs to the same facts.
-  return JSON.stringify([m.team_id,m.opponent_team_id,m.start_time,m.duration_seconds,m.team_kills,m.opponent_kills,m.win]);
+  return JSON.stringify([m.team_id,m.opponent_team_id,m.start_time,m.duration_seconds,m.team_kills,m.opponent_kills,m.win,m.patch_id ?? null,m.map_number ?? null]);
 }
 
-export function sampleTeam(history: AnalysisHistory, teamId: string, cutoffMs: number): TeamSample {
+export function sampleTeam(history: AnalysisHistory, teamId: string, cutoffMs: number, patchId?: string, roster?: number[]): TeamSample {
   const definition = TRACKED_TEAMS.find(t=>t.id === teamId);
   const all = history.maps.filter(m=>m.team_id === teamId);
   const byId = new Map<string, AnalysisMap>();
@@ -45,19 +48,18 @@ export function sampleTeam(history: AnalysisHistory, teamId: string, cutoffMs: n
   for (const m of all) {
     if (!validMap(m) || !knownBy(m.verified_at,cutoffMs) || (m.start_time + m.duration_seconds) * 1000 > cutoffMs) continue;
     const previous = byId.get(m.match_id);
-    if (previous && mapFacts(previous) !== mapFacts(m)) conflicts.add(m.match_id);
+    if (previous && (mapFacts(previous) !== mapFacts(m) || hasRoster(previous.players) && hasRoster(m.players) && rosterKey(previous.players!) !== rosterKey(m.players!))) conflicts.add(m.match_id);
     // A source with player IDs enriches the same map without duplicating it.
     if (!previous || !hasRoster(previous.players) && hasRoster(m.players)) byId.set(m.match_id,m);
   }
   const completed = [...byId.values()].filter(m=>!conflicts.has(m.match_id)).sort((a,b)=>b.start_time-a.start_time || b.match_id.localeCompare(a.match_id));
-  const reference = definition?.reference_roster ?? [];
-  const latestKnownRoster = completed.find(m=>hasRoster(m.players));
-  const rosterChanged = reference.length === 5 && !!latestKnownRoster && rosterKey(latestKnownRoster.players!) !== rosterKey(reference);
+  const reference = roster ?? definition?.reference_roster ?? [];
+  const latest = completed[0];
+  const rosterUncertain = !hasRoster(reference) || !latest || !hasRoster(latest.players) || conflicts.size > 0 && all.some(m=>conflicts.has(m.match_id) && (!latest || m.start_time >= latest.start_time));
+  const rosterChanged = hasRoster(reference) && !!latest && hasRoster(latest.players) && rosterKey(latest.players!) !== rosterKey(reference);
   const eligible = completed.filter(m=> {
-    if (m.forecast_sample === false) return false;
-    if (teamId !== '10020555') return true;
-    if (m.audit_origin === 'baseline-2026-11-08' && m.forecast_sample === true) return true;
-    return hasRoster(m.players) && rosterKey(m.players!) === rosterKey(reference);
+    return !!patchId && m.patch_id === patchId && m.forecast_sample !== false
+      && hasRoster(reference) && hasRoster(m.players) && rosterKey(m.players!) === rosterKey(reference);
   });
   const maps = eligible.slice(0,30);
   const mapIds = new Set(maps.map(m=>m.match_id));
@@ -68,17 +70,95 @@ export function sampleTeam(history: AnalysisHistory, teamId: string, cutoffMs: n
     if (s.team_id !== teamId || !s.complete_bo3 || s.forecast_sample === false || s.excluded_reason || !validScores.has(`${s.score_team}:${s.score_opponent}`)) continue;
     if (!knownBy(s.verified_at,cutoffMs) || (s.end_time ?? s.start_time) * 1000 > cutoffMs || s.start_time * 1000 >= cutoffMs) continue;
     if (!s.sources.length || !s.sources.every(validUrl)) continue;
-    if (!seriesKeys.has(s.series_key) && !s.map_ids.some(id=>mapIds.has(id))) continue;
+    if (!s.map_ids.length || !s.map_ids.every(id=>mapIds.has(id)) || !seriesKeys.has(s.series_key) && !s.map_ids.some(id=>mapIds.has(id))) continue;
     const old = seriesByKey.get(s.series_key);
     if (old && (old.score_team !== s.score_team || old.score_opponent !== s.score_opponent || old.opponent_team_id !== s.opponent_team_id)) conflictingSeries.add(s.series_key);
     if (!old) seriesByKey.set(s.series_key,s);
   }
   const series = [...seriesByKey.values()].filter(s=>!conflictingSeries.has(s.series_key)).sort((a,b)=>b.start_time-a.start_time || a.series_key.localeCompare(b.series_key));
-  const notes = [definition?.scope_note ?? 'Неизвестная команда.', 'Выборка доступных карт, а не гарантия полноты последних 30 игр.'];
+  const notes = ['До 30 доступных карт только указанного текущего патча и одинакового состава; полнота источника не гарантирована.'];
+  if (!patchId) notes.push('Текущий патч не подтверждён: выборка для ставки пуста.');
   if (maps.length < 30) notes.push(`Доступно ${maps.length} карт из целевых 30.`);
   if (conflicts.size) notes.push(`Исключено карт с противоречивыми фактами: ${conflicts.size}.`);
   if (rosterChanged) notes.push('Последний известный состав отличается от исходного; новые прогнозы остановлены до проверки состава.');
-  return {team_id:teamId,team:definition?.name ?? teamId,maps,series,excluded_maps:all.length-maps.length,conflicting_map_ids:[...conflicts].sort(),roster_changed:rosterChanged,notes};
+  if (rosterUncertain) notes.push('Последний состав неизвестен или противоречив: матч относится к пулу неопределённости.');
+  return {team_id:teamId,team:definition?.name ?? teamId,maps,series,excluded_maps:all.length-maps.length,conflicting_map_ids:[...conflicts].sort(),roster_changed:rosterChanged,roster_uncertain:rosterUncertain,notes};
+}
+
+function uniqueCompletedMaps(maps: AnalysisMap[], cutoffMs: number): AnalysisMap[] {
+  const byId = new Map<string,AnalysisMap>();
+  const conflicts = new Set<string>();
+  for (const row of maps) {
+    if (!validMap(row) || !numericId(row.opponent_team_id) || !knownBy(row.verified_at,cutoffMs) || (row.start_time + row.duration_seconds) * 1000 > cutoffMs) continue;
+    // Both team-perspective rows represent ONE game. Canonical orientation also
+    // lets contradictory mirrored outcomes fail closed instead of counting twice.
+    const m = row.team_id < row.opponent_team_id ? row : {...row,team_id:row.opponent_team_id,team:row.opponent,opponent_team_id:row.team_id,opponent:row.team,team_kills:row.opponent_kills,opponent_kills:row.team_kills,win:!row.win};
+    const previous = byId.get(m.match_id);
+    if (previous && mapFacts(previous) !== mapFacts(m)) conflicts.add(m.match_id);
+    if (!previous) byId.set(m.match_id,m);
+  }
+  return [...byId.values()].filter(m=>!conflicts.has(m.match_id)).sort((a,b)=>a.start_time-b.start_time || a.match_id.localeCompare(b.match_id));
+}
+
+function ratingMaps(history: AnalysisHistory, cutoffMs: number, patchId: string): AnalysisMap[] {
+  if (!patchId) return [];
+  const teamIds = new Set(history.maps.map(m=>m.team_id));
+  const eligibleRows: AnalysisMap[] = [];
+  for (const teamId of teamIds) {
+    const definition = TRACKED_TEAMS.find(t=>t.id===teamId);
+    // Untracked opponents use their latest known lineup for this patch. Missing
+    // latest lineup remains uncertainty, rather than borrowing an older one.
+    const latest = history.maps.filter(m=>m.team_id===teamId && validMap(m) && knownBy(m.verified_at,cutoffMs) && (m.start_time+m.duration_seconds)*1000<=cutoffMs).sort((a,b)=>b.start_time-a.start_time)[0];
+    const s = sampleTeam(history,teamId,cutoffMs,patchId,definition?.reference_roster ?? latest?.players);
+    if (!s.roster_changed && !s.roster_uncertain) eligibleRows.push(...s.maps);
+  }
+  const keys = new Set(eligibleRows.map(m=>`${m.match_id}:${m.team_id}`));
+  // Require both teams' roster evidence; an unknown opposing lineup cannot
+  // silently reintroduce an ineligible match through its mirrored row.
+  return uniqueCompletedMaps(eligibleRows.filter(m=>keys.has(`${m.match_id}:${m.opponent_team_id}`)),cutoffMs);
+}
+
+const eloProbability = (a: number,b: number) => 1/(1+10**((b-a)/400));
+
+export function buildTeamRatings(history: AnalysisHistory, cutoffMs: number, patchId: string): TeamRating[] {
+  if (!patchId || !Number.isFinite(cutoffMs)) return [];
+  const ratings = new Map<string,TeamRating>();
+  const get = (id:string,name:string) => {
+    if (!ratings.has(id)) ratings.set(id,{team_id:id,team:name,patch_id:patchId,rating:1500,maps:0,wins:0,losses:0,match_ids:[]});
+    return ratings.get(id)!;
+  };
+  for (const t of TRACKED_TEAMS) get(t.id,t.name);
+  for (const m of ratingMaps(history,cutoffMs,patchId)) {
+    const a=get(m.team_id,m.team),b=get(m.opponent_team_id,m.opponent);
+    const change=24*(Number(m.win)-eloProbability(a.rating,b.rating));
+    a.rating+=change;b.rating-=change;
+    for (const [team,won] of [[a,m.win],[b,!m.win]] as const) {
+      team.maps++;team.wins+=Number(won);team.losses+=Number(!won);team.match_ids.push(m.match_id);
+    }
+  }
+  return [...ratings.values()].sort((a,b)=>b.rating-a.rating || a.team_id.localeCompare(b.team_id));
+}
+
+export function analyzeMatchup(history: AnalysisHistory, teamAId: string, teamBId: string, cutoffMs: number, patchId: string): MatchupAnalysis {
+  const ratings=buildTeamRatings(history,cutoffMs,patchId);
+  const a=ratings.find(t=>t.team_id===teamAId) ?? null,b=ratings.find(t=>t.team_id===teamBId) ?? null;
+  const pair = (m:AnalysisMap) => m.team_id===teamAId && m.opponent_team_id===teamBId || m.team_id===teamBId && m.opponent_team_id===teamAId;
+  const summarize = (maps:AnalysisMap[],eligible:boolean):HeadToHeadSummary => {
+    const rows=maps.filter(pair),winsA=rows.filter(m=>m.team_id===teamAId?m.win:!m.win).length;
+    return {maps:rows.length,wins_a:winsA,wins_b:rows.length-winsA,match_ids:rows.map(m=>m.match_id),eligible_for_betting:eligible};
+  };
+  return {patch_id:patchId,ratings:{team_a:a,team_b:b},map_win_probability_a:a?.maps && b?.maps?eloProbability(a.rating,b.rating):null,
+    head_to_head:{current_patch:summarize(ratingMaps(history,cutoffMs,patchId),true),historical_context:summarize(uniqueCompletedMaps(history.maps,cutoffMs).filter(m=>!!m.patch_id && m.patch_id!==patchId),false)},
+    notes:['Рейтинг начинается с 1500 в каждом патче; K=24, не более 30 карт на команду, зеркальные строки одной карты считаются один раз.','Очные встречи уже входят в Elo и не получают повторного веса. Прошлые патчи показаны только как контекст с нулевым весом.']};
+}
+
+function rosterProblem(proof: RosterConfirmation | undefined, teamId: string, nowMs: number): string | null {
+  const reference=TRACKED_TEAMS.find(t=>t.id===teamId)?.reference_roster;
+  if (!proof || !hasRoster(proof.account_ids) || !validUrl(proof.source_url) || typeof proof.has_standin!=='boolean') return 'Нет подтверждения полного состава на предстоящую серию: пул неопределённости, ставка запрещена.';
+  const at=Date.parse(proof.verified_at);
+  if (!Number.isFinite(at) || at>nowMs || nowMs-at>ROSTER_MAX_AGE_MS) return 'Подтверждение состава отсутствует, устарело или датировано будущим: ставка запрещена.';
+  if (proof.has_standin || !hasRoster(reference) || rosterKey(proof.account_ids)!==rosterKey(reference!)) return 'Замена или изменение состава: пул неопределённости, ставка запрещена.';
+  return null;
 }
 
 export function fixtureKey(fixture: FixtureInput): string {
@@ -100,21 +180,24 @@ export function buildForecasts(history: AnalysisHistory, fixture: FixtureInput, 
   const day = new Date(startMs).toISOString().slice(0,10);
   if (day < EXPERIMENT_FIRST_DAY || day > EXPERIMENT_LAST_DAY) return skip('Матч за пределами 30-дневного эксперимента.');
   if (fixture.team_a_id === fixture.team_b_id || !TRACKED_TEAMS.some(t=>t.id === fixture.team_a_id) || !TRACKED_TEAMS.some(t=>t.id === fixture.team_b_id)) return skip('Обе команды должны иметь подтверждённые ID из списка эксперимента.');
-  const a = sampleTeam(history,fixture.team_a_id,Math.min(nowMs,startMs));
-  const b = sampleTeam(history,fixture.team_b_id,Math.min(nowMs,startMs));
+  if (typeof fixture.patch_id!=='string' || !fixture.patch_id.trim()) return skip('Текущий патч не подтверждён: прогноз и ставка пропущены.');
+  const rosterIssue=rosterProblem(fixture.rosters?.team_a,fixture.team_a_id,nowMs) ?? rosterProblem(fixture.rosters?.team_b,fixture.team_b_id,nowMs);
+  if (rosterIssue) return skip(rosterIssue);
+  const a = sampleTeam(history,fixture.team_a_id,Math.min(nowMs,startMs),fixture.patch_id,fixture.rosters!.team_a.account_ids);
+  const b = sampleTeam(history,fixture.team_b_id,Math.min(nowMs,startMs),fixture.patch_id,fixture.rosters!.team_b.account_ids);
   const samples = {a,b};
-  if (a.roster_changed || b.roster_changed) return skip('Изменился последний известный состав; нужна проверка новой выборки.',samples);
-  if (!a.maps.length || !b.maps.length) return skip('Недостаточно подтверждённых карт одной из команд.',samples);
-  if (!a.series.length || !b.series.length) return skip('Нет подтверждённых завершённых BO3 одной из команд; набор прогнозов пропущен.',samples);
+  if (a.roster_changed || b.roster_changed || a.roster_uncertain || b.roster_uncertain) return skip('Изменился или неизвестен последний состав: пул неопределённости, ставка запрещена.',samples);
+  if (!a.maps.length || !b.maps.length) return skip('В текущем патче нет подтверждённых карт с подходящим составом одной из команд: вероятность не вычислить.',samples);
+  const matchup=analyzeMatchup(history,a.team_id,b.team_id,nowMs,fixture.patch_id);
+  if (matchup.map_win_probability_a===null || matchup.ratings.team_a!.maps<MIN_BETTING_MAPS || matchup.ratings.team_b!.maps<MIN_BETTING_MAPS) return skip('Нет карт текущего патча с подтверждённым составом обеих сторон для рейтинга соперников.',samples);
   const fixtureId = fixtureKey(fixture);
   if (!fixtureId.length || fixtureId.length > 190) return skip('Некорректный идентификатор матча.',samples);
-  const binary = (predicate: (m:AnalysisMap)=>boolean) => ((a.maps.filter(predicate).length+1)/(a.maps.length+2)+(b.maps.filter(predicate).length+1)/(b.maps.length+2))/2;
-  const scores: Record<string,number> = {};
-  for (const [x,y] of [[2,0],[2,1],[1,2],[0,2]]) {
-    const ka = a.series.filter(s=>s.score_team === x && s.score_opponent === y).length;
-    const kb = b.series.filter(s=>s.score_team === y && s.score_opponent === x).length;
-    scores[`${x}:${y}`] = ((ka+1)/(a.series.length+4)+(kb+1)/(b.series.length+4))/2;
-  }
+  const firstA=a.maps.filter(m=>m.map_number===1),firstB=b.maps.filter(m=>m.map_number===1);
+  const firstMaps=uniqueCompletedMaps([...firstA,...firstB],nowMs);
+  const binary = (predicate: (m:AnalysisMap)=>boolean) => (firstMaps.filter(predicate).length+1)/(firstMaps.length+2);
+  const p=matchup.map_win_probability_a,q=1-p;
+  // One coherent BO3 distribution, derived from opponent-adjusted map strength.
+  const scores:Record<string,number>={'2:0':p*p,'2:1':2*p*p*q,'1:2':2*p*q*q,'0:2':q*q};
   // Every map's original evidence remains in history; the frozen input IDs below
   // identify the exact sample. Keep the ledger's per-candidate source list small.
   const historySources = [...new Set([...a.maps.flatMap(m=>m.sources),...b.maps.flatMap(m=>m.sources),...a.series.flatMap(s=>s.sources),...b.series.flatMap(s=>s.sources)])].sort();
@@ -126,11 +209,14 @@ export function buildForecasts(history: AnalysisHistory, fixture: FixtureInput, 
     const order = candidates.length;
     candidates.push({forecast_id:`${fixtureId}-${String(order).padStart(2,'0')}`,fixture_id:fixtureId,team_a:a.team,team_b:b.team,
       team_a_id:a.team_id,team_b_id:b.team_id,scheduled_start_utc:new Date(startMs).toISOString(),created_utc:created,data_cutoff_utc:created,
-      cohort_date:day,model_version:'baseline-v1',selection_version:'selection-v2',market,family,selection,threshold,probability,label,map_number:mapNumber,
+      cohort_date:day,model_version:'prematch-elo-v2',selection_version:'expected-value-v1',market,family,selection,threshold,probability,label,map_number:mapNumber,
       selected:false,selection_rank:null,candidate_order:order,n_maps_a:a.maps.length,n_maps_b:b.maps.length,n_series_a:a.series.length,n_series_b:b.series.length,
       sources,limitation:ANALYSIS_LIMITATION,fixture_source:fixture.source_url,provider_id:fixture.provider_id ?? null,
       input_sample:{team_a_match_ids:a.maps.map(m=>m.match_id),team_b_match_ids:b.maps.map(m=>m.match_id),team_a_series_keys:a.series.map(s=>s.series_key),team_b_series_keys:b.series.map(s=>s.series_key),notes:[...a.notes,...b.notes]},
       series_score_distribution:scores,
+      betting_eligible:true,patch_id:fixture.patch_id,roster_snapshots:structuredClone(fixture.rosters),matchup_analysis:matchup,
+      rating_match_ids:[...new Set([...matchup.ratings.team_a!.match_ids,...matchup.ratings.team_b!.match_ids])],
+      total_sample_match_ids:firstMaps.map(m=>m.match_id),n_map1_a:firstA.length,n_map1_b:firstB.length,
     });
   };
   add('map_handicap','series_result','a',1.5,1-scores['0:2'],`${a.team} +1.5 карты`);
@@ -140,17 +226,17 @@ export function buildForecasts(history: AnalysisHistory, fixture: FixtureInput, 
   const pa = scores['2:0']+scores['2:1'];
   add('series_winner','series_result','a',null,pa,`Победа ${a.team}`);
   add('series_winner','series_result','b',null,1-pa,`Победа ${b.team}`);
-  for (const threshold of [39.5,44.5,49.5,54.5,59.5,64.5]) {
-    const p = binary(m=>m.team_kills+m.opponent_kills > threshold);
-    add('map_kills','map_kills','over',threshold,p,`Карта 1: убийства >${threshold}`,1);
-    add('map_kills','map_kills','under',threshold,1-p,`Карта 1: убийства <${threshold}`,1);
+  if (firstA.length>=MIN_TOTAL_MAPS && firstB.length>=MIN_TOTAL_MAPS) {
+    for (const threshold of [39.5,44.5,49.5,54.5,59.5,64.5]) {
+      const probability = binary(m=>m.team_kills+m.opponent_kills > threshold);
+      add('map_kills','map_kills','over',threshold,probability,`Карта 1: убийства >${threshold}`,1);
+      add('map_kills','map_kills','under',threshold,1-probability,`Карта 1: убийства <${threshold}`,1);
+    }
+    const duration = binary(m=>m.duration_seconds >= 2460);
+    add('map_duration','map_duration','over_or_equal',2460,duration,'Карта 1: длительность ≥41:00',1);
+    add('map_duration','map_duration','under',2460,1-duration,'Карта 1: длительность <41:00',1);
   }
-  const duration = binary(m=>m.duration_seconds >= 2460);
-  add('map_duration','map_duration','over_or_equal',2460,duration,'Карта 1: длительность ≥41:00',1);
-  add('map_duration','map_duration','under',2460,1-duration,'Карта 1: длительность <41:00',1);
-  const rounded = (p:number) => Math.round(p*1e12)/1e12;
-  const ranked = [...candidates].sort((a,b)=>rounded(b.probability)-rounded(a.probability) || Number(a.candidate_order)-Number(b.candidate_order));
-  const chosen = [ranked[0],ranked.find(f=>f.family !== ranked[0].family)!];
-  chosen.forEach((f,index)=>{f.selected=true;f.selection_rank=index+1;});
+  // A probability alone cannot select a bet. The paper layer evaluates these
+  // frozen candidates against fresh odds, EV and sample/uncertainty limits.
   return {forecasts:candidates,skip_reason:null,samples};
 }

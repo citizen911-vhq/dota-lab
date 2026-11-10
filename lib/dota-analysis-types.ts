@@ -9,6 +9,8 @@ export interface AnalysisMap {
   series_key?: string | null; players?: number[]; sources: string[];
   forecast_sample?: boolean; series_excluded_reason?: string | null;
   verified_at?: string; audit_origin?: string; map_number?: number | null;
+  /** Provider/catalog patch identifier; absent is unknown, never the current patch. */
+  patch_id?: string | null;
 }
 
 /** A complete BO3 verified separately from the potentially incomplete map index. */
@@ -30,12 +32,36 @@ export interface FixtureInput {
   team_a_id: string; team_b_id: string; scheduled_start_utc: string;
   source_url: string; best_of: 3; status: 'scheduled'; verified_at: string;
   league_id?: string; league?: string;
+  patch_id?: string;
+  rosters?: { team_a: RosterConfirmation; team_b: RosterConfirmation };
+}
+
+export interface RosterConfirmation {
+  account_ids: number[]; verified_at: string; source_url: string; has_standin: boolean;
 }
 
 export interface TeamSample {
   team_id: string; team: string; maps: AnalysisMap[]; series: AnalysisSeries[];
   excluded_maps: number; conflicting_map_ids: string[];
-  roster_changed: boolean; notes: string[];
+  roster_changed: boolean; roster_uncertain: boolean; notes: string[];
+}
+
+export interface TeamRating {
+  team_id: string; team: string; patch_id: string; rating: number;
+  maps: number; wins: number; losses: number; match_ids: string[];
+}
+
+export interface HeadToHeadSummary {
+  maps: number; wins_a: number; wins_b: number; match_ids: string[];
+  eligible_for_betting: boolean;
+}
+
+export interface MatchupAnalysis {
+  patch_id: string;
+  ratings: { team_a: TeamRating | null; team_b: TeamRating | null };
+  map_win_probability_a: number | null;
+  head_to_head: { current_patch: HeadToHeadSummary; historical_context: HeadToHeadSummary };
+  notes: string[];
 }
 
 export interface ForecastBuild {

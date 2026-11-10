@@ -12,6 +12,10 @@ export interface NormalizedMatch {
   radiant_win: boolean;
   series_id: number | null;
   series_type: number | null;
+  /** Explicit OpenDota patch ID. Never inferred from collection date. */
+  patch_id: string | null;
+  /** Contradictory rediscovery preserves facts but prohibits model use. */
+  context_conflict?: string;
   league_id: string;
   players: { radiant: string[]; dire: string[] };
   sources: string[];
@@ -96,13 +100,15 @@ function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings:
     else if (types.length > 1 || (stype !== null && types.some(value => value !== stype))) warnings.push(`OpenDota ${matchId}: источники расходятся по формату серии.`);
   }
   const players = { radiant: playerAccounts(raw, 'radiant'), dire: playerAccounts(raw, 'dire') };
+  const patchId = integer(raw.patch) ? String(raw.patch) : null;
+  if (patchId === null) warnings.push(`OpenDota ${matchId}: ID патча не подтверждён; карта пригодна только для справки, не для ставки.`);
   if (players.radiant.length !== 5 || players.dire.length !== 5) warnings.push(`OpenDota ${matchId}: полный состав из пяти публичных account_id не подтверждён.`);
   return {
     id: matchId, match_id: matchId,
     start_time: raw.start_time, end_time: raw.start_time + raw.duration, duration_seconds: raw.duration,
     radiant_team_id: radiant, dire_team_id: dire,
     radiant_kills: raw.radiant_score, dire_kills: raw.dire_score, radiant_win: raw.radiant_win,
-    series_id: sid, series_type: stype, league_id: league, players,
+    series_id: sid, series_type: stype, patch_id: patchId, league_id: league, players,
     sources: [...new Set([...candidate.sources, `${API}/matches/${matchId}`, `https://www.opendota.com/matches/${matchId}`])],
   };
 }

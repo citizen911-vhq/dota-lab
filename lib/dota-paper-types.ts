@@ -1,4 +1,5 @@
 import type { Forecast, Market, Status } from './dota-types';
+import type { ValuePolicy } from './dota-value';
 
 export interface PaperSettings {
   initial_bankroll: number;
@@ -29,6 +30,10 @@ export interface PaperBet {
   placed_utc: string;
   probability_snapshot: number;
   odds_snapshot: number;
+  policy_version?: 'expected-value-v1';
+  policy_snapshot?: ValuePolicy;
+  expected_value_snapshot?: number;
+  conservative_ev_snapshot?: number;
 }
 
 export interface PaperBetView extends PaperBet {

@@ -10,7 +10,7 @@ const map = (extra = {}) => ({
   match_id: 9080101215, start_time: seconds - 3600, duration: 2400,
   radiant_team_id: 55, dire_team_id: 10252232, leagueid: 20511,
   radiant_score: 27, dire_score: 20, radiant_win: true,
-  series_id: 1165389, series_type: 1,
+  series_id: 1165389, series_type: 1, patch: 60,
   players: Array.from({ length: 10 }, (_, n) => ({ account_id: 100 + n, player_slot: n < 5 ? n : 128 + n - 5, kills: 999 })),
   ...extra,
 });
@@ -42,11 +42,25 @@ test('deduplicates discovery, reads final scores and seconds, and keeps public r
   assert.equal(match.radiant_kills, 27); // players.kills intentionally does not agree
   assert.equal(match.dire_kills, 20);
   assert.equal(match.duration_seconds, 2400);
+  assert.equal(match.patch_id, '60');
   assert.equal(match.end_time, raw.start_time + 2400);
   assert.deepEqual(match.players.radiant, ['100', '101', '102', '103', '104']);
   assert.equal(match.sources.length, 5);
   assert.ok(calls.every(call => call.options.method === 'GET' && call.options.redirect === 'manual' && call.options.signal instanceof AbortSignal));
   assert.ok(!('map_number' in match)); // index order cannot prove first-map order
+});
+
+test('only explicit numeric patch IDs enter normalized history; missing or malformed patch stays unknown', async () => {
+  for (const patch of [undefined,null,'60',-1,60.5]) {
+    const raw=map({patch});
+    const {fetchFn}=mock({'teams/55/matches':[teamRow(raw)],[`matches/${raw.match_id}`]:raw});
+    const result=await collectOpenDota([],now,fetchFn);
+    assert.equal(result.matches[0].patch_id,null);
+    assert.match(result.warnings.join(' '),/ID патча не подтверждён/);
+  }
+  const raw=map({patch:0});
+  const {fetchFn}=mock({'teams/55/matches':[teamRow(raw)],[`matches/${raw.match_id}`]:raw});
+  assert.equal((await collectOpenDota([],now,fetchFn)).matches[0].patch_id,'0');
 });
 
 test('known maps and curated remakes are not fetched, ancient index rows do not create backlog', async () => {

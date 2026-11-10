@@ -1,3 +1,5 @@
+import type {MatchupAnalysis} from '@/lib/dota-analysis-types';
+
 export interface Forecast {
   forecast_id: string; fixture_id: string; team_a: string; team_b: string;
   scheduled_start_utc: string; created_utc: string; data_cutoff_utc?: string; cohort_date?: string;
@@ -6,6 +8,7 @@ export interface Forecast {
   n_maps_a?: number; n_maps_b?: number; n_series_a?: number; n_series_b?: number;
   model_version?: string; limitation?: string; status: string; outcome: number | null; brier?: number | null;
   sources?: string[]; observation?: Observation | null;
+  patch_id?: string; matchup_analysis?: MatchupAnalysis;
 }
 export interface Observation {
   fixture_id: string; observation_id: string; recorded_utc: string;

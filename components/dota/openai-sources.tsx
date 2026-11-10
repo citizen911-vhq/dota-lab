@@ -15,7 +15,7 @@ export default function OpenaiSources(){
   const report=status?.last_run;
   return <section className="panel paper-quote-panel">
     <div className="panel-heading"><div><h2>Поиск открытых источников</h2><p>{status?status.key_configured?'Серверный ключ OpenAI настроен':'Серверный ключ OpenAI не настроен':'Проверяем подключение…'}</p></div><button className="button button-light" disabled={busy||!status?.key_configured} onClick={search}>{busy?<LoaderCircle size={16} className="spin"/>:<Search size={16}/>} {busy?'Ищем источники…':'Найти коэффициенты'}</button></div>
-    <p className="paper-form-lead">Поиск запускается при ежедневном анализе или этой кнопкой: не более одной попытки в день по Якутску. Использует баланс OpenAI API. Повторное нажатие показывает сохранённый отчёт.</p>
+    <p className="paper-form-lead">Поиск запускается отдельно этой кнопкой: не более одной попытки в день по Якутску. Использует баланс OpenAI API. Десятиминутная проверка линии его не вызывает. Повторное нажатие показывает сохранённый отчёт.</p>
     <div className="paper-notice"><p>Это поисковый отчёт, а не подтверждённая линия. Свежесть цены, время начала и правила рынка проверяются отдельно. Найденный текст не создаёт прогнозы или виртуальные ставки.</p></div>
     {error&&<p className="form-error" role="alert">{error}</p>}
     {message&&<p className="paper-form-lead" role="status">{message}</p>}

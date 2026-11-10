@@ -98,6 +98,42 @@ test('roster checks ignore older evidence and block missing, duplicated or chang
   assert.match(rosterAlerts([match(0,true,{players:{...players,radiant:['1','1','2','3','4']}})],baseline,now)['55'],/не подтверждён/);
   assert.match(rosterAlerts([match(0,true,{players:{...players,radiant:['11','12','13','14','15']}})],baseline,now)['55'],/отличается/);
   assert.deepEqual(rosterAlerts([match(0,true,{start_time:start-3600,end_time:start-1600,players:{...players,radiant:[]}})],baseline,now),{});
+  assert.match(rosterAlerts([match(0),match(1,true,{players:{...players,radiant:[]}})],baseline,now)['55'],/не подтверждён/,'The latest incomplete lineup must not fall back to an older complete roster');
+});
+
+test('backfill enriches missing patch and roster only when map facts agree, without altering the seed',()=>{
+  const raw=match(0,true,{patch_id:'60'});
+  const old=historyFromMatches(empty,[{...raw,patch_id:null,players:{radiant:[],dire:[]}}],journal(),now);
+  old.maps[0].forecast_sample=false; // an audit exclusion survives enrichment
+  const h=historyFromMatches(old,[raw],journal(),now);
+  assert.equal(h.maps.length,2);
+  assert.ok(h.maps.every(m=>m.patch_id==='60'&&m.players.length===5));
+  assert.equal(h.maps[0].forecast_sample,false);
+  assert.ok(old.maps.every(m=>m.patch_id===null&&m.players.length===0));
+  assert.deepEqual(historyFromMatches(h,[raw],journal(),now),h);
+  for(const delta of [{patch_id:'59'},{radiant_kills:99},{players:{...players,radiant:['11','12','13','14','15']}}]) {
+    const changed=historyFromMatches(h,[{...raw,...delta}],journal(),now);
+    const a=changed.maps.find(m=>m.team_id==='55');
+    assert.equal(a.patch_id,'60');assert.equal(a.team_kills,30);assert.deepEqual(a.players,[1,2,3,4,5]);
+    assert.equal(a.forecast_sample,false);assert.match(a.series_excluded_reason,/Противоречие/);
+  }
+});
+
+test('fixture context preserves complete current proof and rejects malformed or stale roster/patch evidence',()=>{
+  const before=start*1000-3600000;
+  const f={team_a_id:'55',team_b_id:'10242397',scheduled_start_utc:new Date(start*1000).toISOString(),verified_at:new Date(before).toISOString(),best_of:3,status:'scheduled',source_url:'https://cyberscore.live/en/matches/test-123/'};
+  const proof=(account_ids)=>({account_ids,verified_at:f.verified_at,source_url:f.source_url,has_standin:false});
+  const rosters={team_a:proof([1,2,3,4,5]),team_b:proof([6,7,8,9,10])};
+  assert.deepEqual(checkedFixture({...f,patch_id:'60',rosters},before).rosters,rosters);
+  assert.equal(checkedFixture({...f,patch_id:'60',rosters},before).patch_id,'60');
+  assert.equal(checkedFixture(f,before).rosters,undefined,'Schedule discovery can collect fixtures without claiming roster proof');
+  assert.equal(checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,has_standin:true}}},before).rosters.team_a.has_standin,true,'Keep a stand-in confirmation for the model to reject');
+  for(const patch_id of ['7.41','060',-1,null])assert.throws(()=>checkedFixture({...f,patch_id},before));
+  for(const delta of [{account_ids:[1,2,3,4,4]},{account_ids:[1,2,3,4]},{account_ids:['1','2','3','4','5']},{has_standin:undefined},{verified_at:new Date(before+1).toISOString()},{verified_at:new Date(before-7*3600000).toISOString()},{source_url:'https://example.com'}]) {
+    assert.throws(()=>checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,...delta}}},before));
+  }
+  assert.throws(()=>checkedFixture({...f,rosters:{team_a:rosters.team_a}},before));
+  assert.throws(()=>checkedFixture({...f,rosters:{team_a:rosters.team_a,team_b:rosters.team_a}},before));
 });
 
 test('fixture validation requires supported IDs, fresh source and HTTPS',()=>{
@@ -123,7 +159,8 @@ test('official evidence confirms 2:1 and 2:0 without needing a saved forecast',(
 test('all-null series metadata and an untracked opponent can be confirmed and linked',()=>{
   const maps=[match(0,true,{dire_team_id:'999',series_id:null,series_type:null}),match(1,true,{dire_team_id:'999',series_id:null,series_type:null})];
   const h=historyFromMatches(empty,maps,journal(),now);
-  assert.equal(h.maps.length,2);
+  assert.equal(h.maps.length,4);
+  assert.ok(h.maps.some(m=>m.team_id==='999'&&m.team==='Team 999'&&m.players.length===5),'Keep opponent context for ratings and roster checks');
   const input=official({team_b_id:'999',score:[2,0],map_ids:maps.map(m=>m.id)});
   const confirmation=confirmSeries(h,input,now);
   assert.equal(confirmation[0].series_key,'verified:9900000000-9900000001');
@@ -131,8 +168,10 @@ test('all-null series metadata and an untracked opponent can be confirmed and li
   const merged=mergeVerifiedSeries(h,confirmation);
   assert.equal(merged.series.length,2);assert.ok(merged.maps.every(m=>m.series_key===confirmation[0].series_key));
   assert.ok(merged.maps.every(m=>m.series_id===null&&m.series_type===null),'Verified linkage must not invent provider metadata');
+  assert.deepEqual(merged.maps.map(m=>m.map_number),[1,1,2,2]);
   assert.ok(h.maps.every(m=>m.series_key===null),'Input history remains unchanged');
   assert.deepEqual(mergeVerifiedSeries(merged,confirmation),merged,'Retry is idempotent');
+  assert.throws(()=>mergeVerifiedSeries({...h,maps:h.maps.map(m=>({...m,map_number:2}))},confirmation),'An existing conflicting map number cannot be overwritten');
   const reverse=confirmSeries(h,{...input,team_a_id:'999',team_b_id:'55',score:[0,2]},now);
   assert.deepEqual(reverse.map(s=>[s.team_id,s.score_team,s.score_opponent]),[['999',0,2],['55',2,0]]);
 });

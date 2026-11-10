@@ -6,6 +6,11 @@ declare namespace Cloudflare {
     ODDS_API_IO_KEY?: string;
     ODDS_API_IO_BOOKMAKERS?: string;
     AUTO_PAPER_ENABLED?: string;
+    ODDSLINK_API_KEY?: string;
+    ODDSLINK_MAX_REQUESTS_PER_DAY?: string;
+    PAPER_MIN_ODDS?: string;
+    PAPER_MIN_EV?: string;
+    PAPER_PROBABILITY_RESERVE?: string;
     BUCKET?: R2Bucket;
   }
 }
