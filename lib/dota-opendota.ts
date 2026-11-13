@@ -1,3 +1,6 @@
+import { primaryTeamPool, frequentTier1CandidateIds, parseOpenDotaTeamDirectory, qualifyFrequentTier1Teams, selectTier1Core, type DynamicTeamPoolEntry, type OpenDotaTeamDirectoryEntry } from './dota-team-pool';
+import { HISTORY_START_MS } from './dota-history-policy';
+
 /** Public, bounded, append-only discovery. Callers must merge returned maps into history. */
 export interface NormalizedMatch {
   id: string;
@@ -7,6 +10,8 @@ export interface NormalizedMatch {
   duration_seconds: number;
   radiant_team_id: string;
   dire_team_id: string;
+  radiant_name?: string;
+  dire_name?: string;
   radiant_kills: number;
   dire_kills: number;
   radiant_win: boolean;
@@ -31,14 +36,18 @@ export interface OpenDotaCollection {
   discovered: number;
   unfetched_ids: string[];
   fetched_at: string;
+  team_pool: DynamicTeamPoolEntry[];
+  team_directory: OpenDotaTeamDirectoryEntry[];
+  discovered_team_ids: string[];
+  history_attempted_ids: string[];
 }
 
 export const TRACKED_TEAM_IDS = ['55', '10020555', '10242397', '10252232', '5014799', '10212329', '10331884', '10271553'] as const;
-const TRACKED = new Set<string>(TRACKED_TEAM_IDS);
+const LEGACY_NAMES: Record<string,string> = {'55':'Power Rangers','10020555':'PlayTime','10242397':'Xipto Esports','10252232':'Zenith','5014799':'Nemiga Gaming','10212329':'Team Synapse','10331884':'Froglings','10271553':'potn9ki'};
 const EXCLUDED_REMAKES = new Set(['9074604699', '9044544461', '9074615771']);
 const API = 'https://api.opendota.com/api';
 const MAX_DETAILS = 12;
-const DEFAULT_SINCE_SECONDS = Date.parse('2026-11-07T06:29:06Z') / 1000;
+const DEFAULT_SINCE_SECONDS = HISTORY_START_MS / 1000;
 type Raw = Record<string, unknown>;
 type Candidate = { id: string; start: number; rows: Raw[]; sources: Set<string> };
 
@@ -73,12 +82,16 @@ function playerAccounts(raw: Raw, side: 'radiant' | 'dire'): string[] {
   return [...new Set(players.map(p => id(p.account_id)).filter((account): account is string => account !== null && Number(account) < 4294967295))].sort((a, b) => Number(a) - Number(b));
 }
 
-function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings: string[]): NormalizedMatch | null {
+function safeName(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120 && !/[\u0000-\u001f]/.test(value) ? value.trim() : undefined;
+}
+
+function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings: string[], eligible: Set<string>, names: Map<string,string>): NormalizedMatch | null {
   const matchId = id(raw.match_id);
   const radiant = id(raw.radiant_team_id);
   const dire = id(raw.dire_team_id);
   const league = id(raw.leagueid);
-  if (matchId !== candidate.id || !radiant || !dire || radiant === dire || !league || (!TRACKED.has(radiant) && !TRACKED.has(dire)) ||
+  if (matchId !== candidate.id || !radiant || !dire || radiant === dire || !league || (!eligible.has(radiant) && !eligible.has(dire)) ||
       !integer(raw.start_time, 1) || !integer(raw.duration, 1) || !integer(raw.radiant_score) || !integer(raw.dire_score) || typeof raw.radiant_win !== 'boolean') {
     warnings.push(`OpenDota ${candidate.id}: неполные или противоречивые поля карты; запись не принята.`);
     return null;
@@ -107,15 +120,17 @@ function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings:
     id: matchId, match_id: matchId,
     start_time: raw.start_time, end_time: raw.start_time + raw.duration, duration_seconds: raw.duration,
     radiant_team_id: radiant, dire_team_id: dire,
+    radiant_name: safeName(raw.radiant_name) ?? names.get(radiant), dire_name: safeName(raw.dire_name) ?? names.get(dire),
     radiant_kills: raw.radiant_score, dire_kills: raw.dire_score, radiant_win: raw.radiant_win,
     series_id: sid, series_type: stype, patch_id: patchId, league_id: league, players,
     sources: [...new Set([...candidate.sources, `${API}/matches/${matchId}`, `https://www.opendota.com/matches/${matchId}`])],
   };
 }
 
-/** No retries or redirects. At most 11 indexes + 12 details per cycle. */
-export async function collectOpenDota(knownIds: string[], now = Date.now(), fetchFn: typeof fetch = fetch, sinceSeconds = DEFAULT_SINCE_SECONDS, apiKey?: string): Promise<OpenDotaCollection> {
+/** No retries or redirects. Team discovery is bounded; at most 12 match details are read per cycle. */
+export async function collectOpenDota(knownIds: string[], now = Date.now(), fetchFn: typeof fetch = fetch, sinceSeconds = DEFAULT_SINCE_SECONDS, apiKey?: string, previousPool: DynamicTeamPoolEntry[] = [], requestBudget = Number.MAX_SAFE_INTEGER, usePrimaryPool = false, queuedTeamIds:string[]=[]): Promise<OpenDotaCollection> {
   if (!Number.isFinite(now) || !integer(sinceSeconds, 1)) throw new Error('Некорректное время сбора OpenDota.');
+  if (!integer(requestBudget)) throw new Error('Некорректный лимит запросов OpenDota.');
   // Official OpenAPI securitySchemes also permits Authorization: Bearer:
   // https://github.com/odota/core/blob/master/svc/api/spec.ts
   // Keep the optional server credential out of URLs, provenance and metadata.
@@ -131,6 +146,11 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
 
   async function request(url: string): Promise<unknown | null> {
     if (stopped) return null;
+    if (requested >= requestBudget) {
+      stopped = true;
+      warnings.push('OpenDota: месячный бюджет запросов исчерпан; сбор приостановлен до следующего месяца.');
+      return null;
+    }
     requested++;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
@@ -206,20 +226,68 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
     }
   }
 
-  const indexes: Array<{ path: string; team?: string }> = [
-    ...TRACKED_TEAM_IDS.map(team => ({ path: `teams/${team}/matches`, team })),
-    { path: 'leagues/20511/matches' }, { path: 'leagues/20486/matches' }, { path: 'proMatches' },
+  const directoryPayload = await request(`${API}/teams`);
+  const directory = parseOpenDotaTeamDirectory(directoryPayload);
+  const directoryHealthy = directory.length > 0;
+  let core = usePrimaryPool ? primaryTeamPool(directory, previousPool) : selectTier1Core(directory, nowSeconds);
+  if(usePrimaryPool)core.push(...previousPool.filter(t=>t.qualification==='expanded-top'&&!core.some(c=>c.id===t.id)).slice(0,8));
+  if (!core.length) {
+    const reusable = previousPool.filter(team => team.qualification === 'tier1-rating').slice(0, 15);
+    core = reusable.length ? reusable : TRACKED_TEAM_IDS.map((team, index) => ({
+      id: team, name: LEGACY_NAMES[team], tag: null, rating: 0, last_match_time: nowSeconds - 1,
+      qualification: 'legacy-fallback' as const, tier1_rank: index + 1, tier1_opponent_maps: 0, recent_maps: 0,
+    }));
+    warnings.push(directoryPayload === null ? 'OpenDota: каталог команд недоступен; временно используется последний сохранённый пул.' : 'OpenDota: каталог активных рейтинговых команд пуст; временно используется резервный пул.');
+  }
+  const histories = new Map<string, Raw[]>();
+  const successfulHistoryIds = new Set<string>();
+  async function readTeamHistory(team: string) {
+    const url = `${API}/teams/${team}/matches`;
+    const result = await request(url);
+    if (!Array.isArray(result)) {
+      if (result !== null) warnings.push(`OpenDota: индекс ${url} не содержит список карт.`);
+      return;
+    }
+    histories.set(team, result.filter(object));
+    successfulHistoryIds.add(team);
+    successfulIndexes++;
+  }
+  for (const team of core) {
+    if (stopped) break;
+    await readTeamHistory(team.id);
+  }
+  const discoveredTeams=new Set<string>();
+  for(const rows of histories.values())for(const row of rows){
+    const opponent=id(row.opposing_team_id);
+    if(opponent&&integer(row.start_time,1)&&row.start_time>=nowSeconds-30*86400&&row.start_time<nowSeconds&&!core.some(t=>t.id===opponent)&&directory.some(t=>t.id===opponent))discoveredTeams.add(opponent);
+  }
+  const candidateIds = usePrimaryPool ? [...new Set(queuedTeamIds)].filter(id=>directory.some(t=>t.id===id)&&!core.some(t=>t.id===id)).slice(0,8) : frequentTier1CandidateIds(core, histories).slice(0, 40);
+  for (const teamId of candidateIds) {
+    if (stopped) break;
+    await readTeamHistory(teamId);
+  }
+  const frequent = usePrimaryPool ? [] : qualifyFrequentTier1Teams(core, directory, histories);
+  const teamPool = [...core, ...frequent];
+  const eligible = new Set(teamPool.map(team => team.id));
+  const names = new Map<string,string>(Object.entries(LEGACY_NAMES));
+  for (const team of directory) names.set(team.id, team.name);
+
+  const indexes: Array<{ path: string; team?: string; rows?: Raw[] }> = [
+    ...[...new Set([...teamPool.map(t=>t.id),...candidateIds])].map(id => ({ path: `teams/${id}/matches`, team: id, rows: histories.get(id) })),
+    // Historical experiment league remains a supplemental gap-filling index;
+    // eligibility is still determined only by the dynamic team pool.
+    { path: 'leagues/20511/matches' }, { path: 'proMatches' },
   ];
   for (const index of indexes) {
     if (stopped) break;
     const url = `${API}/${index.path}`;
-    const result = await request(url);
+    const result = index.team ? index.rows ?? null : await request(url);
     if (result === null) continue;
     if (!Array.isArray(result)) {
       warnings.push(`OpenDota: индекс ${url} не содержит список карт.`);
       continue;
     }
-    successfulIndexes++;
+    if (!index.rows) successfulIndexes++;
     for (const value of result) {
       if (!object(value)) continue;
       const row: Raw = { ...value };
@@ -229,7 +297,9 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
       }
       const matchId = id(row.match_id);
       if (!matchId || known.has(matchId) || EXCLUDED_REMAKES.has(matchId) || !integer(row.start_time, 1) || row.start_time >= nowSeconds || row.start_time < sinceSeconds ||
-          (!TRACKED.has(id(row.radiant_team_id) ?? '') && !TRACKED.has(id(row.dire_team_id) ?? ''))) continue;
+          (!eligible.has(id(row.radiant_team_id) ?? '') && !eligible.has(id(row.dire_team_id) ?? ''))) continue;
+      // Candidate history is only useful against admitted teams, and only in the rolling month.
+      if(usePrimaryPool&&index.team&&candidateIds.includes(index.team)&&row.start_time<nowSeconds-30*86400)continue;
       const candidate = candidates.get(matchId) ?? { id: matchId, start: row.start_time, rows: [], sources: new Set<string>() };
       candidate.rows.push(row);
       candidate.sources.add(url);
@@ -244,16 +314,20 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
     attemptedDetails++;
     const raw = await request(`${API}/matches/${candidate.id}`);
     if (!object(raw)) continue;
-    const match = normalize(raw, candidate, nowSeconds, warnings);
+    const match = normalize(raw, candidate, nowSeconds, warnings, eligible, names);
     if (match) { matches.push(match); accepted.add(match.id); }
   }
   if (queue.length > MAX_DETAILS) warnings.push(`OpenDota: ${queue.length - MAX_DETAILS} новых карт отложено из-за лимита 12 подробных запросов за цикл.`);
   return {
     matches, warnings,
-    healthy: successfulIndexes === indexes.length && attemptedDetails === matches.length,
+    healthy: directoryHealthy && successfulHistoryIds.size === core.length + candidateIds.length && successfulIndexes === core.length + candidateIds.length + 2 && attemptedDetails === matches.length,
     successful_indexes: successfulIndexes,
     requested, discovered: queue.length,
     unfetched_ids: queue.filter(candidate => !accepted.has(candidate.id)).map(candidate => candidate.id),
     fetched_at: new Date(now).toISOString(),
+    team_pool: teamPool,
+    team_directory: directory,
+    discovered_team_ids:[...discoveredTeams],
+    history_attempted_ids:candidateIds.filter(id=>successfulHistoryIds.has(id)),
   };
 }

@@ -17,10 +17,10 @@ export function oddsLinkEvents(rows: unknown, f: Forecast, proofs: ScheduleProof
   const verified = proofs.some(p => {
     let source = false;
     try { const u = new URL(p.source_url); source = u.protocol === 'https:' && ['cyberscore.live', 'www.cyberscore.live', 'liquipedia.net', 'dota.haglund.dev'].includes(u.hostname); } catch {}
-    return source && p.best_of === 3 && p.status === 'scheduled' && Date.parse(p.verified_at) <= now && now - Date.parse(p.verified_at) <= 6 * 3600_000 && Math.abs(Date.parse(p.scheduled_start_utc) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair({ home_team: p.team_a, away_team: p.team_b }, f.team_a, f.team_b);
+    return source && [2,3].includes(p.best_of) && p.best_of === (f.best_of??3) && p.status === 'scheduled' && Date.parse(p.verified_at) <= now && now - Date.parse(p.verified_at) <= 6 * 3600_000 && Math.abs(Date.parse(p.scheduled_start_utc) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair({ home_team: p.team_a, away_team: p.team_b }, f.team_a, f.team_b);
   });
   if (!verified) return [];
-  return rows.filter(e => e && typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 200 && e.sport_key === 'dota2' && e.status === 'scheduled' && e.is_live === false && (e.best_of == null || e.best_of === 3) && Date.parse(e.commence_time) > now && Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair(e, f.team_a, f.team_b));
+  return rows.filter(e => e && typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 200 && e.sport_key === 'dota2' && e.status === 'scheduled' && e.is_live === false && (e.best_of == null || e.best_of === (f.best_of??3)) && Date.parse(e.commence_time) > now && Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair(e, f.team_a, f.team_b));
 }
 export function oddsLinkQuote(e: Obj, f: Forecast, now: number) {
   if (e.sport_key !== 'dota2' || e.status !== 'scheduled' || e.is_live !== false || !(Date.parse(e.commence_time) > now) || !pair(e, f.team_a, f.team_b) || !Number.isFinite(Date.parse(f.scheduled_start_utc)) || Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) > 60_000) return null;
@@ -54,18 +54,38 @@ export function oddsLinkCoverage(rows: Obj[], now: number) {
   const events = future.map(e => ({ event_id: e.id, team_a: e.home_team, team_b: e.away_team, start: e.commence_time, markets: [...new Set((Array.isArray(e.bookmakers) ? e.bookmakers : []).filter((b: Obj) => ODDSLINK_BOOKS.includes(b?.key)).flatMap((b: Obj) => (Array.isArray(b.markets) ? b.markets : []).filter((m: Obj) => m && fresh(m.last_update, now) && Array.isArray(m.outcomes) && m.outcomes.some((o: Obj) => typeof o?.price === 'number' && o.price >= 1.01 && o.price <= 1000)).map((m: Obj) => `${m.key}:${m.period ?? 'full'}`)))] }));
   return { events_received: rows.length, future_events: future.length, fresh_events: events.filter(e => e.markets.length).length, events: events.slice(0, 40) };
 }
+function headerInteger(headers:Headers,name:string) {
+  const value=headers.get(name);
+  return value!==null&&/^\d+$/.test(value)?Number(value):null;
+}
 export async function fetchOddsLink(fetcher: typeof fetch = fetch, apiKey?: string) {
   try {
     const key = apiKey?.trim();
     const r = await fetcher(key ? 'https://oddslink.app' + ODDSLINK_PATH : ODDSLINK_URL, { redirect: 'manual', signal: AbortSignal.timeout(12_000), headers: { Accept: 'application/json', ...(key ? { 'X-API-Key': key } : {}) } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (!r.ok) {
+      let providerCode='';
+      try {
+        const body=await r.text();
+        if(body.length<=20_000){const parsed=JSON.parse(body);if(typeof parsed?.error?.code==='string'&&/^[A-Z_]{2,40}$/.test(parsed.error.code))providerCode=parsed.error.code;}
+      } catch {}
+      throw new Error(`HTTP ${r.status}${providerCode?` ${providerCode}`:''}`);
+    }
     const text = await r.text();
     if (text.length > 4_000_000) throw new Error('oversize');
     const rows = JSON.parse(text);
     if (!Array.isArray(rows) || rows.length > 500) throw new Error('invalid');
-    return { rows: rows as Obj[], remaining: r.headers.get(key ? 'X-RateLimit-Remaining' : 'X-Tryit-Remaining') };
+    const usage={
+      monthly_used:key?headerInteger(r.headers,'x-requests-used'):null,
+      monthly_remaining:key?headerInteger(r.headers,'x-requests-remaining'):null,
+      request_cost:key?headerInteger(r.headers,'x-requests-last'):null,
+      speed_limit:key?headerInteger(r.headers,'X-RateLimit-Limit'):null,
+      speed_remaining:key?headerInteger(r.headers,'X-RateLimit-Remaining'):null,
+      speed_reset_seconds:key?headerInteger(r.headers,'X-RateLimit-Reset'):null,
+      guest_remaining:key?null:headerInteger(r.headers,'X-Tryit-Remaining'),
+    };
+    return { rows: rows as Obj[], remaining:key?usage.monthly_remaining===null?null:String(usage.monthly_remaining):usage.guest_remaining===null?null:String(usage.guest_remaining), usage };
   } catch (e) {
-    const code = e instanceof Error ? e.message.match(/^HTTP (\d{3})$/)?.[1] : null;
-    throw new Error(code ? `OddsLink: HTTP ${code}; повторных запросов нет.` : 'OddsLink недоступен или вернул некорректный ответ; повторных запросов нет.');
+    const code = e instanceof Error ? e.message.match(/^HTTP (\d{3})(?: ([A-Z_]{2,40}))?$/) : null;
+    throw new Error(code ? `OddsLink: HTTP ${code[1]}${code[2]?` ${code[2]}`:''}; повторных запросов нет.` : 'OddsLink недоступен или вернул некорректный ответ; повторных запросов нет.');
   }
 }

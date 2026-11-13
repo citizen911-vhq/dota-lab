@@ -74,7 +74,17 @@ test('invalid source, future pre-match result and incomplete kill score rejected
   assert.throws(()=>validateObservation(observation({map1:{kills_a:30}}),fixtures,after),/обеих команд/);
   assert.throws(()=>validateObservation(observation({series_score:[1,1]}),fixtures,after),/BO3/);
 });
+test('BO2 accepts a 1:1 draw and settles a series-winner pick as a loss',()=>{
+  const bo2={...f,fixture_id:'bo2-fixture',best_of:2,scheduled_start_utc:'2026-11-08T10:00:00Z'};
+  const bo2Fixtures=new Map([[bo2.fixture_id,bo2]]);
+  const draw=observation({fixture_id:bo2.fixture_id,series_score:[1,1]});
+  assert.doesNotThrow(()=>validateObservation(draw,bo2Fixtures,after));
+  assert.equal(settle({...bo2,market:'series_winner',selection:'a'},draw).outcome,0);
+});
 test('canonical payload hashes ignore object key order but preserve changed values', () => {
   assert.equal(canonical({b:2,a:{d:4,c:3}}),canonical({a:{c:3,d:4},b:2}));
   assert.notEqual(canonical({x:0}),canonical({x:false}));
+  assert.equal(canonical({b:undefined,a:1}),'{"a":1}');
+  assert.equal(canonical([1,undefined]),'[1,null]');
+  assert.doesNotThrow(()=>JSON.parse(canonical({rosters:undefined,status:'scheduled'})));
 });

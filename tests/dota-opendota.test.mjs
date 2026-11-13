@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { collectOpenDota, TRACKED_TEAM_IDS } from '../lib/dota-opendota.ts';
+import {registerHooks} from 'node:module';
+registerHooks({resolve(specifier,context,nextResolve){
+  try{return nextResolve(specifier,context);}catch(error){
+    if(error.code==='ERR_MODULE_NOT_FOUND'&&specifier.startsWith('.')&&!/\.[a-z]+$/.test(specifier))return nextResolve(specifier+'.ts',context);
+    throw error;
+  }
+}});
+const { collectOpenDota, TRACKED_TEAM_IDS } = await import('../lib/dota-opendota.ts');
+const {PRIMARY_TEAM_POOL} = await import('../lib/dota-team-pool.ts');
+
+test('primary collection reads exactly the approved histories despite an unrelated ranking',async()=>{
+  const {fetchFn,calls}=mock();
+  const result=await collectOpenDota([],now,fetchFn,undefined,undefined,[],100,true);
+  assert.deepEqual(result.team_pool.map(t=>t.id),PRIMARY_TEAM_POOL.map(([id])=>id));
+  assert.deepEqual(calls.filter(c=>/teams\/\d+\/matches$/.test(c.url)).map(c=>c.url.split('/').at(-2)),PRIMARY_TEAM_POOL.map(([id])=>id));
+  assert.equal(result.healthy,true);
+  const failure=mock({teams:()=>json({},503)});
+  const unavailable=await collectOpenDota([],now,failure.fetchFn,undefined,undefined,[],100,true);
+  assert.deepEqual(unavailable.team_pool.map(t=>t.id),result.team_pool.map(t=>t.id));
+  assert.equal(unavailable.healthy,false);
+});
 
 const now = Date.parse('2026-11-08T09:45:00Z');
 const seconds = now / 1000;
@@ -15,12 +35,15 @@ const map = (extra = {}) => ({
   ...extra,
 });
 const teamRow = (raw) => ({ ...raw, radiant: true, opposing_team_id: raw.dire_team_id });
+const legacyIds=['55','10020555','10242397','10252232','5014799','10212329','10331884','10271553'];
+const directory=legacyIds.map((team_id,index)=>({team_id:Number(team_id),name:`Team ${team_id}`,tag:`T${index}`,rating:2000-index,last_match_time:seconds-60}));
 const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json', ...headers } });
 function mock(routes = {}) {
   const calls = [];
   const fetchFn = async (url, options) => {
     calls.push({ url, options });
-    const value = routes[String(url).slice(api.length)];
+    const path=String(url).slice(api.length);
+    const value = routes[path] ?? (path==='teams' ? directory : undefined);
     if (typeof value === 'function') return value(url, options);
     return value instanceof Response ? value : json(value ?? []);
   };
@@ -33,7 +56,7 @@ test('deduplicates discovery, reads final scores and seconds, and keeps public r
   const result = await collectOpenDota([], now, fetchFn);
   assert.equal(result.requested, 12);
   assert.equal(result.healthy, true);
-  assert.equal(result.successful_indexes, 11);
+  assert.equal(result.successful_indexes, 10);
   assert.equal(result.discovered, 1);
   assert.equal(result.matches.length, 1);
   assert.deepEqual(result.unfetched_ids, []);
@@ -63,9 +86,15 @@ test('only explicit numeric patch IDs enter normalized history; missing or malfo
   assert.equal((await collectOpenDota([],now,fetchFn)).matches[0].patch_id,'0');
 });
 
+test('September history is collected before the November journal starts',async()=>{
+  const raw=map({start_time:Date.parse('2026-08-31T15:00:00Z')/1000});
+  const {fetchFn}=mock({'teams/55/matches':[teamRow(raw)],[`matches/${raw.match_id}`]:raw});
+  assert.equal((await collectOpenDota([],now,fetchFn)).matches.length,1);
+});
+
 test('known maps and curated remakes are not fetched, ancient index rows do not create backlog', async () => {
   const known = map();
-  const old = map({ match_id: 100, start_time: Date.parse('2026-11-01T00:00:00Z') / 1000 });
+  const old = map({ match_id: 100, start_time: Date.parse('2026-08-31T14:59:59Z') / 1000 });
   const excluded = map({ match_id: 9074604699 });
   const { fetchFn, calls } = mock({ 'teams/55/matches': [teamRow(known), teamRow(old), teamRow(excluded)] });
   const result = await collectOpenDota([`valve:${known.match_id}`], now, fetchFn);
@@ -91,11 +120,21 @@ test('enforces 23-request limit and preserves unprocessed candidate IDs', async 
   assert.equal(result.matches[0].id, '9080200019');
 });
 
+test('honors an explicit OpenDota billing budget before making another request', async () => {
+  const raw = map();
+  const { fetchFn, calls } = mock({ 'teams/55/matches': [teamRow(raw)], [`matches/${raw.match_id}`]: raw });
+  const result = await collectOpenDota([], now, fetchFn, undefined, undefined, [], 3);
+  assert.equal(result.requested, 3);
+  assert.equal(calls.length, 3);
+  assert.equal(result.healthy, false);
+  assert.match(result.warnings.join(' '), /месячный бюджет/);
+});
+
 test('429 stops all further requests and exposes Retry-After without retrying', async () => {
   const { fetchFn, calls } = mock({ 'teams/55/matches': json({ error: 'limited' }, 429, { 'Retry-After': '60' }) });
   const result = await collectOpenDota([], now, fetchFn);
-  assert.equal(calls.length, 1);
-  assert.equal(result.requested, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(result.requested, 2);
   assert.equal(result.healthy, false);
   assert.equal(result.successful_indexes, 0);
   assert.match(result.warnings.join(' '), /Retry-After: 60/);
@@ -105,7 +144,7 @@ test('Workers-compatible manual redirects are rejected without requesting Locati
   const { fetchFn, calls } = mock({ 'teams/55/matches': new Response(null, { status: 302, headers: { Location: 'https://example.org/redirect-target' } }) });
   const result = await collectOpenDota([], now, fetchFn);
   assert.equal(result.healthy, false);
-  assert.equal(result.successful_indexes, 10);
+  assert.equal(result.successful_indexes, 9);
   assert.equal(result.requested, 11);
   assert.ok(calls.every(call => call.url.startsWith(api) && call.options.redirect === 'manual'));
   assert.match(result.warnings.join(' '), /перенаправление/);
@@ -118,7 +157,7 @@ test('rate limit on detail retains the entire queue; unavailable index does not 
   assert.equal(calls.length, 12);
   assert.equal(result.matches.length, 0);
   assert.equal(result.healthy, false);
-  assert.equal(result.successful_indexes, 10);
+  assert.equal(result.successful_indexes, 9);
   assert.deepEqual(result.unfetched_ids, [String(raw.match_id)]);
   assert.match(result.warnings.join(' '), /503/);
 });
@@ -210,7 +249,7 @@ test('authenticated rate-limit and redirect responses do not echo secret-bearing
   const key = '10203040-5060-4070-8090-a0b0c0d0e0f0';
   const limited = mock({ 'teams/55/matches': json({ error: key }, 429, { 'Retry-After': key }) });
   const limitedResult = await collectOpenDota([], now, limited.fetchFn, undefined, key);
-  assert.equal(limitedResult.requested, 1);
+  assert.equal(limitedResult.requested, 2);
   assert.ok(!JSON.stringify(limitedResult).includes(key));
   const redirected = mock({ 'teams/55/matches': new Response(null, { status: 302, headers: { Location: `https://example.org/?api_key=${key}` } }) });
   const redirectedResult = await collectOpenDota([], now, redirected.fetchFn, undefined, key);

@@ -119,7 +119,7 @@ test('backfill enriches missing patch and roster only when map facts agree, with
   }
 });
 
-test('fixture context preserves complete current proof and rejects malformed or stale roster/patch evidence',()=>{
+test('fixture context preserves historical roster evidence and rejects malformed data',()=>{
   const before=start*1000-3600000;
   const f={team_a_id:'55',team_b_id:'10242397',scheduled_start_utc:new Date(start*1000).toISOString(),verified_at:new Date(before).toISOString(),best_of:3,status:'scheduled',source_url:'https://cyberscore.live/en/matches/test-123/'};
   const proof=(account_ids)=>({account_ids,verified_at:f.verified_at,source_url:f.source_url,has_standin:false});
@@ -127,9 +127,10 @@ test('fixture context preserves complete current proof and rejects malformed or 
   assert.deepEqual(checkedFixture({...f,patch_id:'60',rosters},before).rosters,rosters);
   assert.equal(checkedFixture({...f,patch_id:'60',rosters},before).patch_id,'60');
   assert.equal(checkedFixture(f,before).rosters,undefined,'Schedule discovery can collect fixtures without claiming roster proof');
-  assert.equal(checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,has_standin:true}}},before).rosters.team_a.has_standin,true,'Keep a stand-in confirmation for the model to reject');
+  assert.ok(checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,verified_at:new Date(before-7*3600000).toISOString()}}},before).rosters);
+  assert.equal(checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,has_standin:true}}},before).rosters.team_a.has_standin,true,'Keep a stand-in confirmation as informational evidence');
   for(const patch_id of ['7.41','060',-1,null])assert.throws(()=>checkedFixture({...f,patch_id},before));
-  for(const delta of [{account_ids:[1,2,3,4,4]},{account_ids:[1,2,3,4]},{account_ids:['1','2','3','4','5']},{has_standin:undefined},{verified_at:new Date(before+1).toISOString()},{verified_at:new Date(before-7*3600000).toISOString()},{source_url:'https://example.com'}]) {
+  for(const delta of [{account_ids:[1,2,3,4,4]},{account_ids:[1,2,3,4]},{account_ids:['1','2','3','4','5']},{has_standin:undefined},{verified_at:new Date(before+1).toISOString()},{source_url:'https://example.com'}]) {
     assert.throws(()=>checkedFixture({...f,rosters:{...rosters,team_a:{...rosters.team_a,...delta}}},before));
   }
   assert.throws(()=>checkedFixture({...f,rosters:{team_a:rosters.team_a}},before));
@@ -142,6 +143,12 @@ test('fixture validation requires supported IDs, fresh source and HTTPS',()=>{
   assert.equal(checkedFixture(f,before).team_a_id,'55');
   assert.equal(knownFixture({...f,team_a_id:'10242397',team_b_id:'55'},[forecast]),forecast);
   for(const changes of [{team_a_id:'constructor'},{team_b_id:'10291652'},{verified_at:new Date(before+1).toISOString()},{source_url:'http://cyberscore.live/en/matches/'},{source_url:'https://example.com'},{status:'live'},{best_of:1}])assert.throws(()=>checkedFixture({...f,...changes},before));
+});
+
+test('fixture validation preserves a verified BO2 format',()=>{
+  const before=start*1000-3600000;
+  const f={team_a_id:'55',team_b_id:'10242397',scheduled_start_utc:new Date(start*1000).toISOString(),verified_at:new Date(before).toISOString(),best_of:2,status:'scheduled',source_url:'https://cyberscore.live/en/matches/test-bo2/'};
+  assert.equal(checkedFixture(f,before).best_of,2);
 });
 
 const official=(extra={})=>({team_a_id:'55',team_b_id:'10242397',map_ids:three().map(m=>m.id),score:[2,1],source_url:'https://cyberscore.live/en/matches/test-123/',verified_at:new Date(now).toISOString(),...extra});

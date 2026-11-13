@@ -8,7 +8,7 @@ const teamId = (name: string) => Object.entries(TEAM_NAMES).find(([,n])=>n===nam
 const allowedSources = new Set(['cyberscore.live','www.cyberscore.live','liquipedia.net','dota.haglund.dev']);
 const excludedRemakes = new Set(['9074604699','9044544461','9074615771']);
 const validScores = new Set(['2:0','2:1','1:2','0:2']);
-const knownTeam = (id: unknown): id is string => typeof id==='string' && Object.hasOwn(TEAM_NAMES,id);
+const validTeamName = (value: unknown): value is string => typeof value==='string' && value.trim().length>0 && value.trim().length<=120 && !/[\u0000-\u001f]/.test(value);
 const validAccounts = (accounts: (number|string)[]) => accounts.length===5 && new Set(accounts.map(String)).size===5 && accounts.every(id=>/^[1-9]\d*$/.test(String(id))&&Number.isSafeInteger(Number(id))&&Number(id)<4294967295);
 const validPatch = (value: unknown): value is string => typeof value==='string' && /^(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value));
 
@@ -17,7 +17,7 @@ function checkedRoster(value: unknown, now: number): RosterConfirmation {
   const roster=value as RosterConfirmation;
   invariant(Array.isArray(roster.account_ids) && roster.account_ids.every(id=>typeof id==='number') && validAccounts(roster.account_ids),'Нужны пять различных публичных account_id состава.');
   const verified=Date.parse(roster.verified_at);
-  invariant(Number.isFinite(verified) && verified<=now && verified>=now-6*3600000,'Подтверждение состава должно быть не старше шести часов и не из будущего.');
+  invariant(Number.isFinite(verified) && verified<=now,'Дата сведений о составе должна быть корректной и не из будущего.');
   invariant(typeof roster.has_standin==='boolean','Нужно явно указать наличие или отсутствие замены.');
   invariant(validSource(roster.source_url) && new URL(roster.source_url).protocol==='https:' && ['cyberscore.live','www.cyberscore.live','liquipedia.net'].includes(new URL(roster.source_url).hostname),'Нужна HTTPS-ссылка на подтверждение состава в CyberScore или Liquipedia.');
   return {account_ids:[...roster.account_ids].sort((a,b)=>a-b),verified_at:new Date(verified).toISOString(),source_url:roster.source_url,has_standin:roster.has_standin};
@@ -72,13 +72,15 @@ function legalBo3Order(group:AnalysisMap[],score: number[]): boolean {
   return a===score[0]&&b===score[1];
 }
 
-export function checkedFixture(input: unknown, now=Date.now()): FixtureInput {
+export function checkedFixture(input: unknown, now=Date.now(), allowedTeams?: ReadonlyMap<string,string>): FixtureInput {
   invariant(!!input && typeof input==='object' && !Array.isArray(input),'Нужны данные подтверждённой серии.');
   const f=input as FixtureInput;
-  invariant(knownTeam(f.team_a_id) && knownTeam(f.team_b_id) && f.team_a_id!==f.team_b_id,'Неизвестная команда: используйте подтверждённый Valve team ID.');
-  invariant(f.best_of===3 && f.status==='scheduled','Поддерживаются только предстоящие BO3.');
+  const aName=allowedTeams?.get(f.team_a_id)??TEAM_NAMES[f.team_a_id]??f.team_a_name;
+  const bName=allowedTeams?.get(f.team_b_id)??TEAM_NAMES[f.team_b_id]??f.team_b_name;
+  invariant(/^[1-9]\d*$/.test(f.team_a_id) && /^[1-9]\d*$/.test(f.team_b_id) && f.team_a_id!==f.team_b_id && validTeamName(aName) && validTeamName(bName),'Неизвестная команда: используйте подтверждённый Valve team ID и название из каталога OpenDota.');
+  invariant((f.best_of===2||f.best_of===3) && f.status==='scheduled','Поддерживаются предстоящие BO2 и BO3.');
   const start=Date.parse(f.scheduled_start_utc),verified=Date.parse(f.verified_at);
-  invariant(Number.isFinite(start) && start>now && start<=now+48*3600000,'Нужен будущий матч в ближайшие 48 часов.');
+  invariant(Number.isFinite(start) && start>now && start<=now+192*3600000,'Нужен будущий матч в ближайшие 192 часов.');
   invariant(Number.isFinite(verified) && verified<=now && verified>=now-6*3600000,'Подтверждение расписания должно быть не старше шести часов и не из будущего.');
   invariant(validSource(f.source_url) && new URL(f.source_url).protocol==='https:' && allowedSources.has(new URL(f.source_url).hostname),'Используйте HTTPS-ссылку на CyberScore, Liquipedia или открытый календарь Haglund.');
   invariant(!f.provider_id || typeof f.provider_id==='string' && f.provider_id.length<=160,'Некорректный ID расписания.');
@@ -89,19 +91,23 @@ export function checkedFixture(input: unknown, now=Date.now()): FixtureInput {
     rosters={team_a:checkedRoster(f.rosters.team_a,now),team_b:checkedRoster(f.rosters.team_b,now)};
     invariant(!rosters.team_a.account_ids.some(id=>rosters!.team_b.account_ids.includes(id)),'Один игрок не может входить в оба состава предстоящей серии.');
   }
-  return {team_a_id:f.team_a_id,team_b_id:f.team_b_id,scheduled_start_utc:new Date(start).toISOString(),source_url:f.source_url,best_of:3,status:'scheduled',verified_at:new Date(verified).toISOString(),...(f.provider_id?{provider_id:f.provider_id}:{}),...(f.league_id?{league_id:String(f.league_id)}:{}),...(f.league?{league:String(f.league).slice(0,200)}:{}),...(f.patch_id!==undefined?{patch_id:f.patch_id}:{}),...(rosters?{rosters}:{})};
+  return {team_a_id:f.team_a_id,team_b_id:f.team_b_id,team_a_name:aName.trim(),team_b_name:bName.trim(),scheduled_start_utc:new Date(start).toISOString(),source_url:f.source_url,best_of:f.best_of,status:'scheduled',verified_at:new Date(verified).toISOString(),...(f.provider_id?{provider_id:f.provider_id}:{}),...(f.league_id?{league_id:String(f.league_id)}:{}),...(f.league?{league:String(f.league).slice(0,200)}:{}),...(f.patch_id!==undefined?{patch_id:f.patch_id}:{}),...(rosters?{rosters}:{})};
 }
 
 export function knownFixture(f:FixtureInput,forecasts:Forecast[]): Forecast|undefined {
-  const a=TEAM_NAMES[f.team_a_id],b=TEAM_NAMES[f.team_b_id];
-  return forecasts.find(x => ((x.team_a===a&&x.team_b===b)||(x.team_a===b&&x.team_b===a)) && Math.abs(Date.parse(x.scheduled_start_utc)-Date.parse(f.scheduled_start_utc))<18*3600000);
+  return forecasts.find(x => {
+    const a=String(x.team_a_id??''),b=String(x.team_b_id??'');
+    const ids=a&&b&&((a===f.team_a_id&&b===f.team_b_id)||(a===f.team_b_id&&b===f.team_a_id));
+    const names=!a&&!b&&((x.team_a===(f.team_a_name??TEAM_NAMES[f.team_a_id])&&x.team_b===(f.team_b_name??TEAM_NAMES[f.team_b_id]))||(x.team_a===(f.team_b_name??TEAM_NAMES[f.team_b_id])&&x.team_b===(f.team_a_name??TEAM_NAMES[f.team_a_id])));
+    return !!(ids||names) && Math.abs(Date.parse(x.scheduled_start_utc)-Date.parse(f.scheduled_start_utc))<18*3600000;
+  });
 }
 
 export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[],journal:Journal,now=Date.now()): AnalysisHistory {
   const rows=new Map(seed.maps.map(m=>[`${m.team_id}:${m.match_id}`,m]));
   for(const m of distinctMatches(matches,now)) for(const radiant of [true,false]) {
     const id=radiant?m.radiant_team_id:m.dire_team_id,opponent=radiant?m.dire_team_id:m.radiant_team_id;
-    const row:AnalysisMap={team_id:id,team:TEAM_NAMES[id]??`Team ${id}`,opponent_team_id:opponent,opponent:TEAM_NAMES[opponent]??`Team ${opponent}`,match_id:m.id,start_time:m.start_time,duration_seconds:m.duration_seconds,team_kills:radiant?m.radiant_kills:m.dire_kills,opponent_kills:radiant?m.dire_kills:m.radiant_kills,win:radiant?m.radiant_win:!m.radiant_win,league_id:m.league_id,series_id:m.series_id===null?null:String(m.series_id),series_type:m.series_type,series_key:m.series_id===null?null:`${m.league_id}:${m.series_id}`,patch_id:validPatch(m.patch_id)?m.patch_id:null,players:(radiant?m.players.radiant:m.players.dire).map(Number),sources:m.sources,forecast_sample:true,verified_at:new Date(now).toISOString()};
+    const row:AnalysisMap={team_id:id,team:TEAM_NAMES[id]??(radiant?m.radiant_name:m.dire_name)??`Team ${id}`,opponent_team_id:opponent,opponent:TEAM_NAMES[opponent]??(radiant?m.dire_name:m.radiant_name)??`Team ${opponent}`,match_id:m.id,start_time:m.start_time,duration_seconds:m.duration_seconds,team_kills:radiant?m.radiant_kills:m.dire_kills,opponent_kills:radiant?m.dire_kills:m.radiant_kills,win:radiant?m.radiant_win:!m.radiant_win,league_id:m.league_id,series_id:m.series_id===null?null:String(m.series_id),series_type:m.series_type,series_key:m.series_id===null?null:`${m.league_id}:${m.series_id}`,patch_id:validPatch(m.patch_id)?m.patch_id:null,players:(radiant?m.players.radiant:m.players.dire).map(Number),sources:m.sources,forecast_sample:true,verified_at:new Date(now).toISOString()};
     const key=`${id}:${m.id}`,old=rows.get(key);
     if(m.context_conflict){row.forecast_sample=false;row.series_excluded_reason=m.context_conflict;}
     if(!old)rows.set(key,row);
@@ -128,7 +134,7 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
   for(const [fixtureId,o] of latestObservations(journal.observations)) {
     const f=journal.forecasts.find(f=>f.fixture_id===fixtureId);
     if(!f||!o.series_score||!validScores.has(o.series_score.join(':'))||o.series_void||o.map1_void||!o.map1?.match_id||!Number.isFinite(Date.parse(o.recorded_utc))||Date.parse(o.recorded_utc)>now)continue;
-    const a=teamId(f.team_a),b=teamId(f.team_b);if(!a||!b)continue;
+    const a=String(f.team_a_id??teamId(f.team_a)??''),b=String(f.team_b_id??teamId(f.team_b)??'');if(!/^[1-9]\d*$/.test(a)||!/^[1-9]\d*$/.test(b))continue;
     const first=rows.get(`${a}:${o.map1.match_id}`);if(!first?.series_key||first.series_type!==1||excludedSeries.has(first.series_key))continue;
     const fixtureStart=Date.parse(f.scheduled_start_utc)/1000;
     if(first.start_time<fixtureStart-900||first.start_time>fixtureStart+8*3600)continue;
@@ -138,7 +144,7 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
     if(group.some(m=>(m.start_time+m.duration_seconds)*1000>Math.min(now,Date.parse(o.recorded_utc))))continue;
     for(const side of [0,1]) {
       const id=side?b:a,opponent=side?a:b;
-      const s:AnalysisSeries={series_key:first.series_key,team_id:id,team:TEAM_NAMES[id],opponent_team_id:opponent,opponent:TEAM_NAMES[opponent],start_time:group[0].start_time,end_time:group.at(-1)!.start_time+group.at(-1)!.duration_seconds,score_team:o.series_score[side],score_opponent:o.series_score[1-side],map_ids:group.map(m=>m.match_id),complete_bo3:true,forecast_sample:true,sources:[...new Set([...o.sources,...group.flatMap(m=>m.sources)])],verified_at:o.recorded_utc};
+      const s:AnalysisSeries={series_key:first.series_key,team_id:id,team:side?f.team_b:f.team_a,opponent_team_id:opponent,opponent:side?f.team_a:f.team_b,start_time:group[0].start_time,end_time:group.at(-1)!.start_time+group.at(-1)!.duration_seconds,score_team:o.series_score[side],score_opponent:o.series_score[1-side],map_ids:group.map(m=>m.match_id),complete_bo3:true,forecast_sample:true,sources:[...new Set([...o.sources,...group.flatMap(m=>m.sources)])],verified_at:o.recorded_utc};
       if(!series.has(`${id}:${s.series_key}`))series.set(`${id}:${s.series_key}`,s);
       for(const [index,map] of group.entries()) {
         const key=`${id}:${map.match_id}`,existing=rows.get(key);
@@ -173,7 +179,7 @@ export function firstMapEvidence(f:Forecast,matches:NormalizedMatch[],now=Date.n
 export function rosterAlerts(matches:NormalizedMatch[],baseline:Record<string,{account_ids:(string|number)[];observed_start_time?:number;start_time?:number}>,now=Date.now()): Record<string,string> {
   const result:Record<string,string>={};
   const verifiedMatches=distinctMatches(matches,now);
-  for(const id of Object.keys(TEAM_NAMES)) {
+  for(const id of new Set([...Object.keys(TEAM_NAMES),...Object.keys(baseline)])) {
     const latest=verifiedMatches.filter(m=>m.radiant_team_id===id||m.dire_team_id===id).sort((a,b)=>b.start_time-a.start_time)[0],base=baseline[id];
     if(!latest)continue;
     if(!base||!validAccounts(base.account_ids)){result[id]='Нет подтверждённого исходного состава для сравнения.';continue;}

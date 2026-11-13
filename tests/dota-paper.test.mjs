@@ -6,7 +6,10 @@ import { registerHooks } from 'node:module';
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === './dota-core' && context.parentURL?.endsWith('/dota-paper-core.ts')) return nextResolve('./dota-core.ts', context);
   if (specifier === './dota-value' && context.parentURL?.endsWith('/dota-paper-core.ts')) return nextResolve('./dota-value.ts', context);
-  return nextResolve(specifier, context);
+  try{return nextResolve(specifier,context);}catch(error){
+    if(error.code==='ERR_MODULE_NOT_FOUND'&&specifier.startsWith('.')&&!/\.[a-z]+$/.test(specifier))return nextResolve(specifier+'.ts',context);
+    throw error;
+  }
 } });
 const { defaultPaperSettings, paperDashboard, validatePaperSettings, validateQuote, validateBet } = await import('../lib/dota-paper-core.ts');
 

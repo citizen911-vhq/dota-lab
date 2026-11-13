@@ -30,7 +30,8 @@ export interface AnalysisHistory {
 export interface FixtureInput {
   fixture_id?: string; provider_id?: string;
   team_a_id: string; team_b_id: string; scheduled_start_utc: string;
-  source_url: string; best_of: 3; status: 'scheduled'; verified_at: string;
+  team_a_name?: string; team_b_name?: string;
+  source_url: string; best_of: 2 | 3; status: 'scheduled'; verified_at: string;
   league_id?: string; league?: string;
   patch_id?: string;
   rosters?: { team_a: RosterConfirmation; team_b: RosterConfirmation };
@@ -60,6 +61,7 @@ export interface MatchupAnalysis {
   patch_id: string;
   ratings: { team_a: TeamRating | null; team_b: TeamRating | null };
   map_win_probability_a: number | null;
+  form?: {team_a: {maps:number;wins:number;losses:number;win_rate:number|null};team_b: {maps:number;wins:number;losses:number;win_rate:number|null}};
   head_to_head: { current_patch: HeadToHeadSummary; historical_context: HeadToHeadSummary };
   notes: string[];
 }

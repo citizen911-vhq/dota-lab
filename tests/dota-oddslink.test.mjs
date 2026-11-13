@@ -46,9 +46,25 @@ test('series winner does not pick map winner and chooses the highest fresh exact
 test('coverage reports stale line as absent',()=>{assert.equal(oddsLinkCoverage([e],now).fresh_events,1);assert.equal(oddsLinkCoverage([e],now+1800000).fresh_events,0);});
 test('transport is one no-key request, decimal explicitly requested, redirects and 429 not retried',async()=>{
  let calls=0;const result=await fetchOddsLink(async(url,opts)=>{calls++;assert.equal(url,ODDSLINK_URL);assert.equal(opts.redirect,'manual');assert.equal(opts.headers.Authorization,undefined);return Response.json([e],{headers:{'X-Tryit-Remaining':'4'}});});
- assert.equal(calls,1);assert.equal(result.remaining,'4');
+ assert.equal(calls,1);assert.equal(result.remaining,'4');assert.equal(result.usage.guest_remaining,4);assert.equal(result.usage.monthly_remaining,null);
  for(const status of [302,403,429]){let count=0;await assert.rejects(fetchOddsLink(async()=>{count++;return new Response('',{status});}),new RegExp(String(status)));assert.equal(count,1);}
  await assert.rejects(fetchOddsLink(async()=>Response.json({error:'wrong schema'})),/некорректный/);
+});
+
+test('authenticated usage separates monthly allowance from the one-second speed window',async()=>{
+ const result=await fetchOddsLink(async(url,opts)=>{
+  assert.equal(url,'https://oddslink.app'+new URL(ODDSLINK_URL).searchParams.get('path'));
+  assert.equal(opts.headers['X-API-Key'],'test-only-key');
+  return Response.json([e],{headers:{'x-requests-used':'17','x-requests-remaining':'983','x-requests-last':'1','X-RateLimit-Limit':'2','X-RateLimit-Remaining':'1','X-RateLimit-Reset':'1'}});
+ },'test-only-key');
+ assert.equal(result.remaining,'983');
+ assert.deepEqual(result.usage,{monthly_used:17,monthly_remaining:983,request_cost:1,speed_limit:2,speed_remaining:1,speed_reset_seconds:1,guest_remaining:null});
+});
+
+test('authenticated allowance errors preserve the safe provider code without retrying',async()=>{
+ let calls=0;
+ await assert.rejects(fetchOddsLink(async()=>{calls++;return Response.json({error:{code:'ALLOWANCE_SPENT'}},{status:429});},'test-only-key'),/429 ALLOWANCE_SPENT/);
+ assert.equal(calls,1);
 });
 
 test('observed Stake ladder accepts exact alternate kill total, not a nearest available line',()=>{

@@ -5,9 +5,14 @@ export class DataError extends Error {
   constructor(message: string, status = 400) { super(message); this.status = status; }
 }
 export function canonical(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError('Value is not JSON-serializable.');
+  return canonicalJson(JSON.parse(serialized));
+}
+function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
-  return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical((value as Record<string, unknown>)[k])).join(',') + '}';
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJson((value as Record<string, unknown>)[k])).join(',') + '}';
 }
 export function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new DataError(message);
@@ -58,7 +63,9 @@ export function validateObservation(value: unknown, fixtures: Map<string, Foreca
   if (value.series_void != null) invariant(typeof value.series_void === 'boolean', 'Некорректная отмена серии.');
   if (value.map1_void != null) invariant(typeof value.map1_void === 'boolean', 'Некорректная отмена карты.');
   if (value.series_score != null) {
-    invariant(Array.isArray(value.series_score) && ['[2,0]', '[2,1]', '[1,2]', '[0,2]'].includes(JSON.stringify(value.series_score)), 'Для завершённой BO3 допустимы 2:0, 2:1, 1:2 и 0:2.');
+    const bestOf=fixture.best_of??3;
+    const scores=bestOf===2?['[2,0]','[1,1]','[0,2]']:['[2,0]','[2,1]','[1,2]','[0,2]'];
+    invariant(Array.isArray(value.series_score) && scores.includes(JSON.stringify(value.series_score)), `Некорректный счёт завершённой BO${bestOf}.`);
     invariant(!value.series_void, 'Нельзя одновременно указать счёт и отмену серии.');
   }
   if (value.map1 != null) {
@@ -251,4 +258,3 @@ export function mergeJournal(current: Journal, incomingValue: unknown, now = Dat
   }
   return {journal:{...incoming,durationSupplement,forecasts:[...forecasts.values()],observations:[...observations.values()]},newForecasts,newObservations};
 }
-

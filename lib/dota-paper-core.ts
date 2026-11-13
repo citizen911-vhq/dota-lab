@@ -1,4 +1,5 @@
 import { invariant, latestObservations, settle } from './dota-core';
+import {checkedBetSnapshot} from './dota-bet-recalculation';
 import type { Forecast, Market, Observation, Status } from './dota-types';
 import type { OddsQuote, PaperBet, PaperBetView, PaperCurvePoint, PaperDashboard, PaperMarketSummary, PaperSettings } from './dota-paper-types';
 import { evaluateValue, ODDS_REFRESH_MS, valuePolicy, VALUE_POLICY_VERSION } from './dota-value';
@@ -174,7 +175,9 @@ export function paperDashboard(settings: PaperSettings, quotes: OddsQuote[], bet
   for (const bet of bets) {
     invariant(date(bet.placed_utc), 'Некорректное время ставки.');
     invariant(Date.parse(bet.placed_utc) >= Date.parse(settings.created_utc), 'Ставка не может предшествовать созданию виртуального банка.');
-    const checked = validateBet(bet, quoteMap.get(bet.quote_id), forecastMap.get(bet.forecast_id), Date.parse(bet.placed_utc), true);
+    const original = forecastMap.get(bet.forecast_id);
+    invariant(original, 'Прогноз ставки не найден.');
+    const checked = validateBet(bet, quoteMap.get(bet.quote_id), checkedBetSnapshot(original,bet.analysis_snapshot,Date.parse(bet.placed_utc)), Date.parse(bet.placed_utc), true);
     invariant(checked.probability_snapshot === bet.probability_snapshot && checked.odds_snapshot === bet.odds_snapshot, 'Снимок вероятности или коэффициента ставки изменён.');
   }
   const activeBets = bets.filter(b => Date.parse(b.placed_utc) <= now);
@@ -236,7 +239,7 @@ export function paperDashboard(settings: PaperSettings, quotes: OddsQuote[], bet
     realized = nextRealized;
   }
   const views: PaperBetView[] = activeBets.map(bet => {
-    const forecast = forecastMap.get(bet.forecast_id)!;
+    const forecast = checkedBetSnapshot(forecastMap.get(bet.forecast_id)!,bet.analysis_snapshot,Date.parse(bet.placed_utc));
     const quote = quoteMap.get(bet.quote_id)!;
     const observation = latest.get(forecast.fixture_id);
     if (observation) invariant(Date.parse(observation.recorded_utc) >= Date.parse(bet.placed_utc), 'Результат не может предшествовать регистрации ставки.');

@@ -23,6 +23,7 @@ export interface OddsQuote {
 
 /** Immutable paper entry; both model probability and quote are snapshotted. */
 export interface PaperBet {
+  analysis_snapshot?: Forecast;
   bet_id: string;
   forecast_id: string;
   quote_id: string;

@@ -8,6 +8,7 @@ declare namespace Cloudflare {
     AUTO_PAPER_ENABLED?: string;
     ODDSLINK_API_KEY?: string;
     ODDSLINK_MAX_REQUESTS_PER_DAY?: string;
+    ODDSLINK_MAX_REQUESTS_PER_MONTH?: string;
     PAPER_MIN_ODDS?: string;
     PAPER_MIN_EV?: string;
     PAPER_PROBABILITY_RESERVE?: string;

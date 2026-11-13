@@ -2,7 +2,7 @@ import type { Forecast } from './dota-types';
 
 export const ODDS_REFRESH_MS = 10 * 60_000;
 export interface ValuePolicy { min_odds: number; min_ev: number; probability_reserve: number }
-export const DEFAULT_VALUE_POLICY: ValuePolicy = { min_odds: 1.8, min_ev: 0.05, probability_reserve: 0.03 };
+export const DEFAULT_VALUE_POLICY: ValuePolicy = { min_odds: 1.7, min_ev: 0.05, probability_reserve: 0.03 };
 export const VALUE_POLICY_VERSION = 'expected-value-v1';
 
 /** These are experimental configurable gates, not a confidence interval or a profit guarantee. */

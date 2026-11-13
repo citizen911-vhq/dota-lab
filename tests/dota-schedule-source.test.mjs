@@ -10,6 +10,21 @@ const fixture = (overrides = {}) => ({
   leagueUrl: 'https://liquipedia.net/dota2/Test_Only#Round_1',
   ...overrides,
 });
+
+test('Valve IDs, tags and saved aliases resolve consistently; collisions fail closed',()=>{
+ const catalog=[{id:'1',name:'Alpha',tag:'AA',aliases:['Old Alpha'],eligible:true},{id:'2',name:'Beta',tag:'BB',aliases:[],eligible:false}];
+ const resolve=teams=>parseHaglundSchedule([fixture({teams})],now,catalog);
+ assert.equal(resolve([{team_id:1,name:'Alpha'},{tag:'BB'}]).fixtures.length,1);
+ assert.equal(resolve([{name:'Old Alpha'},{name:'Beta'}]).fixtures.length,1);
+ assert.equal(resolve([{team_id:2,name:'Alpha'},{name:'Beta'}]).fixtures.length,0);
+ const unresolved=resolve([{name:'Unverified alias'},{name:'Beta'}]);
+ assert.equal(unresolved.rejected.length,1);
+ assert.deepEqual(unresolved.recognized_team_ids,['2']);
+ const fixed=parseHaglundSchedule(unresolved.rejected.map(r=>r.row),now,[{...catalog[0],aliases:['Unverified alias']},catalog[1]]);
+ assert.equal(fixed.fixtures.length,1);
+ assert.equal(fixed.fixtures[0].provider_id,'test-fixture:01');
+ assert.equal(parseHaglundSchedule([fixture({teams:[{tag:'AA'},{name:'Beta'}]})],now,[catalog[0],{...catalog[1],tag:'AA'}]).fixtures.length,0);
+});
 const jsonResponse = (body, options = {}) => new Response(JSON.stringify(body), {headers: {'content-type': 'application/json'}, ...options});
 
 test('canonical mapping contains eight distinct verified Valve identities and no LEGION alias', () => {
@@ -22,6 +37,7 @@ test('parser preserves real provider provenance, UTC time, BO3 and cached-feed w
   const result = parseHaglundSchedule([fixture()], now);
   assert.deepEqual(result.fixtures[0], {
     provider_id: 'test-fixture:01', team_a_id: '55', team_b_id: '10020555',
+    team_a_name: 'Power Rangers', team_b_name: 'PlayTime',
     scheduled_start_utc: '2026-11-08T10:00:00.000Z', best_of: 3, status: 'scheduled',
     verified_at: new Date(now).toISOString(),
     sources: [HAGLUND_SCHEDULE_URL, 'https://liquipedia.net/dota2/Test_Only#Round_1'],
@@ -29,6 +45,12 @@ test('parser preserves real provider provenance, UTC time, BO3 and cached-feed w
   assert.match(result.warnings[0], /кэшируется до 3 часов/);
   assert.match(result.warnings[0], /не независимого подтверждения/);
   assert.equal(result.source, HAGLUND_SCHEDULE_URL);
+});
+
+test('parser accepts a real BO2 without turning it into BO3',()=>{
+  const result=parseHaglundSchedule([fixture({id:'test-bo2',matchType:'Bo2'})],now);
+  assert.equal(result.fixtures.length,1);
+  assert.equal(result.fixtures[0].best_of,2);
 });
 
 test('exact URLs and exact observed aliases work; fuzzy names, TBD, former teams and identity conflicts do not', () => {
@@ -46,9 +68,24 @@ test('exact URLs and exact observed aliases work; fuzzy names, TBD, former teams
   assert.deepEqual(result.fixtures.map(f => f.provider_id), ['test:0', 'test:1']);
 });
 
-test('only strictly future starts within 48 hours are emitted', () => {
-  const dates = ['2026-11-08T08:59:59Z', '2026-11-08T09:00:00Z', '2026-11-08T09:00:01Z', '2026-11-10T09:00:00Z', '2026-11-10T09:00:01Z'];
+test('only strictly future starts within 192 hours are emitted', () => {
+  const dates = ['2026-11-08T08:59:59Z', '2026-11-08T09:00:00Z', '2026-11-08T09:00:01Z', '2026-11-16T09:00:00Z', '2026-11-16T09:00:01Z'];
   assert.deepEqual(parseHaglundSchedule(dates.map((startsAt, i) => fixture({id: `test:${i}`, startsAt})), now).fixtures.map(f => f.provider_id), ['test:2', 'test:3']);
+});
+
+test('dynamic catalog includes every supported series involving at least one eligible team',()=>{
+  const catalog=[
+    {id:'1',name:'Tier One',eligible:true},
+    {id:'2',name:'Ordinary Opponent',eligible:false},
+    {id:'3',name:'Other Team',eligible:false},
+  ];
+  const rows=[
+    fixture({id:'dynamic:1',teams:[{name:'tier one'},{name:'Ordinary Opponent'}]}),
+    fixture({id:'dynamic:2',teams:[{name:'Ordinary Opponent'},{name:'Other Team'}]}),
+  ];
+  const result=parseHaglundSchedule(rows,now,catalog);
+  assert.deepEqual(result.fixtures.map(row=>row.provider_id),['dynamic:1']);
+  assert.equal(result.fixtures[0].team_b_id,'2');
 });
 
 test('malformed calendar dates, timezone-free dates, missing IDs and unsupported series formats are rejected', () => {

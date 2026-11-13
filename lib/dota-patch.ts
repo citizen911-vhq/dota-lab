@@ -1,6 +1,6 @@
 /** Explicit IDs in OpenDota's maintained constants, not array positions or the
- * newest match in a possibly stale local history. This source records numbered
- * patches; lettered balance updates are not independently identified here.
+ * newest match in a possibly stale local history. Betting uses the numeric ID;
+ * a letter suffix in the human label is deliberately ignored.
  * Schema verified against the OpenDota dotaconstants repository. */
 export const PATCH_SOURCE_URL = 'https://raw.githubusercontent.com/odota/dotaconstants/master/build/patch.json';
 
@@ -24,7 +24,7 @@ export function parseCurrentPatch(value: unknown, now = Date.now()): Pick<Curren
   }
   if (new Set(entries.map(row => row.id)).size !== entries.length || new Set(entries.map(row => row.date)).size !== entries.length) return null;
   const latest = entries.filter(row => row.date <= now).sort((a, b) => b.date - a.date)[0];
-  return latest ? { patch_id: String(latest.id), patch_name: latest.name, released_at: new Date(latest.date).toISOString() } : null;
+  return latest ? { patch_id: String(latest.id), patch_name: latest.name.replace(/[a-z]$/, ''), released_at: new Date(latest.date).toISOString() } : null;
 }
 
 export async function fetchCurrentPatch(fetchFn: typeof fetch = fetch, now = Date.now()): Promise<CurrentPatch> {
@@ -45,7 +45,6 @@ export async function fetchCurrentPatch(fetchFn: typeof fetch = fetch, now = Dat
       return result;
     }
     Object.assign(result, parsed);
-    result.warnings.push('Патч соответствует ID OpenDota; буквенные балансные обновления внутри такого патча источник отдельно не различает.');
     return result;
   } catch {
     result.warnings.push('Текущий патч не подтверждён: справочник OpenDota недоступен. Ставки заблокированы.');

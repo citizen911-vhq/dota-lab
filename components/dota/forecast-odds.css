@@ -1,0 +1,8 @@
+.forecast-table .forecast-odds-column{min-width:145px;width:155px;white-space:normal}
+.forecast-odds{display:flex;flex-direction:column;gap:4px;line-height:1.35}
+.forecast-odds strong{font-size:20px;color:#285d48;font-variant-numeric:tabular-nums}
+.forecast-odds small{font-size:12px;overflow-wrap:anywhere;color:#617463}
+.forecast-odds time,.forecast-odds>span{font-size:10px;color:#71816c}
+.forecast-odds.outdated strong{color:#7c806a}
+.forecast-odds.outdated>span{color:#947344}
+.forecast-odds-missing{font-size:12px;color:#8a9683}

@@ -21,8 +21,9 @@ interface AnalysisRun {
 }
 
 interface AnalysisStatus {
-  coverage: 'partial';
+  coverage: 'partial' | 'dynamic-tier1' | 'primary-12';
   tracked_teams: number;
+  team_pool?: Array<{id:string;name:string;qualification:'tier1-rating'|'frequent-tier1-opponent'|'legacy-fallback'|'primary-pool';tier1_rank:number|null;tier1_opponent_maps:number;recent_maps:number}>;
   history_maps: number;
   schedule: {enabled: boolean; id?: string; time?: string; timezone?: string; until?: string} | null;
   last_run: AnalysisRun | null;
@@ -119,6 +120,7 @@ export default function AutoStatus({onUpdated}: {onUpdated: () => Promise<void>}
   const rosterAlerts = Object.entries(status?.roster_alerts || {});
   const uncertaintyPool = status?.uncertainty_pool || [];
   const ratings = status?.team_ratings || [];
+  const teamPool = status?.team_pool || [];
   const hasDetails = warnings.length > 0 || skipped.length > 0 || rosterAlerts.length > 0;
 
   return <section className="panel auto-status" aria-labelledby="auto-status-title">
@@ -140,9 +142,10 @@ export default function AutoStatus({onUpdated}: {onUpdated: () => Promise<void>}
       {notice && !error && <p className="auto-status-notice" role="status">{notice}</p>}
     </div>
 
-    <div className="auto-status-coverage"><Info size={16}/><p><strong>Расписание покрыто частично.</strong> Автоматическая лента охватывает турниры tier 1–2 и может отставать до трёх часов. Матчи DreamLeague добавляются после отдельной проверки расписания на CyberScore.</p></div>
-    <div className="auto-status-coverage"><Info size={16}/><p><strong>Патч: {status?.current_patch?.patch_name || (status?.current_patch?.patch_id != null ? String(status.current_patch.patch_id) : 'не подтверждён')}.</strong> Для ставки используются только карты текущего патча и подтверждённого состава, не более 30 на команду. Прошлые патчи доступны как справочная история.</p></div>
+    <div className="auto-status-coverage"><Info size={16}/><p><strong>Основной пул — 12 выбранных команд.</strong> Список закреплён 13 ноября 2026 года по Valve ID и не меняется при обновлении рейтинга. Состав сравнивается с базовой пятёркой; отличия отмечаются информационно. Расписание покрыто частично и может отставать до трёх часов.</p></div>
+    <div className="auto-status-coverage"><Info size={16}/><p><strong>Патч: {status?.current_patch?.patch_name || (status?.current_patch?.patch_id != null ? String(status.current_patch.patch_id) : 'не подтверждён')}.</strong> Для ставки используются только карты текущего патча, не более 30 на команду. Состав отмечается информационно. Прошлые патчи доступны как справочная история.</p></div>
     {!!status?.current_patch?.warnings?.length && <div className="auto-status-detail-content"><ul>{status.current_patch.warnings.map((warning, i) => <li key={`patch-${i}`}>{warning}</li>)}</ul></div>}
+    <details className="auto-status-details"><summary><span>Основной пул команд <span className="count-chip">{teamPool.length}</span></span><ChevronDown size={16}/></summary><div className="auto-status-detail-content">{teamPool.length?<div className="table-scroll"><table><thead><tr><th>Команда</th><th>Причина включения</th></tr></thead><tbody>{teamPool.map(team=><tr key={team.id}><td>{team.name}</td><td>{team.qualification==='primary-pool'?'Основной пул · 13.11.2026':team.qualification==='tier1-rating'?`№${team.tier1_rank} активного рейтинга`:team.qualification==='frequent-tier1-opponent'?`${team.tier1_opponent_maps} из ${team.recent_maps} карт против Tier‑1`:'Резервный пул до обновления OpenDota'}</td></tr>)}</tbody></table></div>:<p>Пул появится после первого успешного обновления каталога OpenDota.</p>}</div></details>
     <details className="auto-status-details" open={uncertaintyPool.length > 0}><summary><span>Пул неопределённости · без ставки <span className="count-chip">{uncertaintyPool.length}</span></span><ChevronDown size={16}/></summary><div className="auto-status-detail-content">{uncertaintyPool.length ? uncertaintyPool.map((item, i) => <div key={item.fixture_id || `${item.fixture}-${i}`}><h3>{item.fixture}</h3><p>{item.reason}</p></div>) : <p>Сейчас нет сохранённых причин пропуска. Допуск каждого матча проверяется перед новой ставкой.</p>}</div></details>
     <details className="auto-status-details"><summary><span>Рейтинг команд текущего патча <span className="count-chip">{ratings.length}</span></span><ChevronDown size={16}/></summary><div className="auto-status-detail-content"><p>Elo учитывает силу соперников на доступных подтверждённых картах текущего патча. Рейтинг ограничен покрытием источника; число карт помогает оценить объём данных.</p>{ratings.length ? <div className="table-scroll"><table><thead><tr><th>Команда</th><th>Elo</th><th>Карт</th><th>Победы / поражения</th></tr></thead><tbody>{[...ratings].sort((a, b) => b.rating - a.rating).map(team => <tr key={team.team_id}><td>{team.team}</td><td>{Math.round(team.rating)}</td><td>{team.maps}</td><td>{team.wins} / {team.losses}</td></tr>)}</tbody></table></div> : <p>Рейтинг появится после подтверждения текущего патча и загрузки подходящей истории.</p>}</div></details>
     {hasDetails && <details className="auto-status-details"><summary><span>Ограничения и пропущенные матчи <span className="count-chip">{warnings.length + skipped.length + rosterAlerts.length}</span></span><ChevronDown size={16}/></summary><div className="auto-status-detail-content">{warnings.length > 0 && <ul>{warnings.map((warning, i) => <li key={`warning-${i}`}>{warning}</li>)}</ul>}{rosterAlerts.length > 0 && <div className="auto-status-rosters"><h3>Изменения составов</h3><ul>{rosterAlerts.map(([id, message]) => <li key={id}>{message}</li>)}</ul></div>}{skipped.length > 0 && <div className="auto-status-skipped"><h3>Прогноз не выпущен</h3>{skipped.map((item, i) => <div key={`${item.fixture}-${i}`}><strong>{item.fixture}</strong><p>{item.reason}</p></div>)}</div>}</div></details>}

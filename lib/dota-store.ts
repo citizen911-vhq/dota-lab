@@ -1,4 +1,6 @@
 import { env } from 'cloudflare:workers';
+import { experimentJournal } from './dota-experiment';
+import { expansionPool,type ExpansionSnapshot } from './dota-expansion';
 import seedData from '../data/seed.json';
 import type { Journal, Forecast, Observation } from './dota-types';
 import { canonical, dashboard, DataError, invariant, latestObservations, validateObservation, mergeJournal } from './dota-core';
@@ -31,9 +33,16 @@ export async function loadJournal(): Promise<{journal: Journal; storage: 'databa
     metadata: meta.metadata ?? seed.metadata,
   }, storage: 'database', updated: metadata.results.map(r => r.updated_utc).sort().at(-1) ?? null};
 }
+export async function readActivePool(){
+  const row=await database().prepare("SELECT payload FROM dota_analysis_records WHERE key='state:expansion'").first<{payload:string}>();
+  return expansionPool(row?JSON.parse(row.payload) as ExpansionSnapshot:undefined);
+}
+export async function readCurrentJournal() {
+  return experimentJournal((await loadJournal()).journal,await readActivePool());
+}
 export async function readDashboard() {
   const {journal,storage,updated} = await loadJournal();
-  return dashboard(journal,storage,updated);
+  return dashboard(experimentJournal(journal,await readActivePool()),storage,updated);
 }
 export async function syncJournal(value: unknown) {
   const db = database();

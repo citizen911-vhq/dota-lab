@@ -12,16 +12,16 @@
   ],
   "steps": [
     "Read analysis_status for the live configuration, tracked team IDs and existing run. Run run_analysis to collect completed maps; source requests and detail counts are bounded by server code.",
-    "Inspect unverified_maps and pending_review. Read explicit public CyberScore or Liquipedia series results. confirm_series requires the official BO3 score and complete ordered Valve map IDs already in history. Do not infer a 2:0 from two observed wins, and do not guess the first map. Use record_result only for independently verified partial facts or explicit append-only corrections.",
-    "Check the public CyberScore upcoming schedule for tracked teams that the open calendar omits. Supply only verified future BO3 pairings, exact UTC starts, team IDs, the source URL and verification time to run_analysis. Never infer a timezone, match identity or start. A source block is a failed check, not permission to bypass access controls.",
+    "Inspect unverified_maps and pending_review. Read explicit public CyberScore or Liquipedia series results. confirm_series requires the official series score and complete ordered Valve map IDs already in history. A BO3 ending 2:0 remains a BO3 and contributes two maps to history; a true BO2 may end 2:0, 1:1 or 0:2. Do not infer a result from observed wins, and do not guess the first map. Use record_result only for independently verified partial facts or explicit append-only corrections.",
+    "Check the public CyberScore upcoming schedule for tracked teams that the open calendar omits. Supply only verified future BO2 or BO3 pairings, exact UTC starts, team IDs, the source URL and verification time to run_analysis. Never infer a timezone, match identity, format or start. A source block is a failed check, not permission to bypass access controls.",
     "At most two run_analysis calls per daily task. Stop retries on rate-limit, access or persistent source errors. Do not create forecasts after the start, change existing probabilities or move the experiment end date.",
-    "Read analysis_status again and report actual new forecasts, settled observations, sample limitations and current evaluation. On 8 December perform final settlement and report; no new forecasts. Summarize selected primary forecasts and minutes separately; pending/void are not losses. Do not claim profit without odds, which are outside this experiment."
+    "Read analysis_status again and report actual new forecasts, settled observations, sample limitations and current evaluation. On 14 December perform final settlement and report; no new forecasts. Summarize selected primary forecasts and minutes separately; pending/void are not losses. Do not claim profit without odds, which are outside this experiment."
   ],
   "timing": {
     "timezone": "Asia/Yakutsk",
     "time": "17:00",
-    "forecast_last_day": "2026-12-07",
-    "final_report_day": "2026-12-08"
+    "forecast_last_day": "2026-12-13",
+    "final_report_day": "2026-12-14"
   },
   "scheduling": "This file describes the intended task; the native Sites schedule must be saved separately. configure_automation only records a confirmed schedule ID for display and cannot itself create a recurring job.",
   "limitations": "OpenDota indexes are incomplete. The open calendar covers only tiers 1–2 and may be cached three hours. Smaller tournaments need independent public schedule checks. Unverified maps, unknown official series outcomes and changed rosters may suppress forecasts; never fill gaps with fabricated statistics."

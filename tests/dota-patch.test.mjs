@@ -8,6 +8,7 @@ const patches=[{id:60,name:'7.41',date:'2026-03-24T00:50:59.580Z'},{id:59,name:'
 test('current patch uses explicit ID and release date, not array order/index or a future release',()=>{
   assert.deepEqual(parseCurrentPatch(patches,now),{patch_id:'60',patch_name:'7.41',released_at:'2026-03-24T00:50:59.580Z'});
   assert.equal(parseCurrentPatch(patches.slice().reverse(),now).patch_id,'60');
+  assert.deepEqual(parseCurrentPatch([...patches,{id:61,name:'7.41b',date:'2026-11-01T00:00:00Z'}],now),{patch_id:'61',patch_name:'7.41',released_at:'2026-11-01T00:00:00.000Z'});
   assert.equal(parseCurrentPatch(patches,Date.parse('2025-01-01')),null);
   for(const value of [{},[],[{name:'7.41',date:patches[0].date}],patches.map(p=>({...p,id:String(p.id)})),[...patches,patches[0]],patches.map(p=>({...p,date:'invalid'}))])assert.equal(parseCurrentPatch(value,now),null);
 });
@@ -19,7 +20,7 @@ test('patch request has fixed verified origin, bounded signal and no cache or re
     return new Response(JSON.stringify(patches));
   },now);
   assert.equal(count,1);assert.equal(result.patch_id,'60');assert.equal(result.verified_at,new Date(now).toISOString());
-  assert.match(result.warnings.join(' '),/буквенные/);
+  assert.deepEqual(result.warnings,[]);
 });
 
 test('unavailable, redirected, malformed and contradictory constants fail closed without guessing patch',async()=>{

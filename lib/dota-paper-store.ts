@@ -1,4 +1,12 @@
 import { env } from 'cloudflare:workers';
+import historySeed from '../data/history-seed.json';
+import {historyFromMatches,mergeVerifiedSeries} from './dota-auto-core';
+import {recalculateBetForecast,checkedBetSnapshot} from './dota-bet-recalculation';
+import type {AnalysisHistory,AnalysisSeries} from './dota-analysis-types';
+import type {Forecast} from './dota-types';
+import {expansionHistory} from './dota-expansion';
+import { experimentJournal } from './dota-experiment';
+import { primaryTeamPool } from './dota-team-pool';
 import { canonical, dashboard, DataError, invariant, supplementForecasts } from './dota-core';
 import { loadJournal } from './dota-store';
 import { defaultPaperSettings, paperDashboard, validateBet, validatePaperSettings, validateQuote } from './dota-paper-core';
@@ -10,6 +18,10 @@ type Row={id:string;payload:string};
 function db(){if(!env.DB)throw new DataError('Хранилище виртуальных ставок недоступно.',503);return env.DB;}
 function object(value:unknown):Record<string,unknown>{invariant(!!value&&typeof value==='object'&&!Array.isArray(value),'Нужны данные записи.');return value as Record<string,unknown>;}
 async function hash(value:unknown){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical(value)));return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+export async function readStoredQuotes():Promise<OddsQuote[]>{
+  const rows=await db().prepare('SELECT payload FROM dota_odds_quotes').all<{payload:string}>();
+  return rows.results.map(r=>JSON.parse(r.payload) as OddsQuote);
+}
 async function loadPaper(){
   const [settings,quotes,bets,loaded]=await Promise.all([
     db().prepare("SELECT id,payload FROM dota_paper_settings WHERE id='main'").first<Row>(),
@@ -17,22 +29,23 @@ async function loadPaper(){
     db().prepare('SELECT id,payload FROM dota_paper_bets ORDER BY placed_utc,id').all<Row>(),
     loadJournal(),
   ]);
-  const base=dashboard(loaded.journal,loaded.storage,loaded.updated);
+  const current=experimentJournal(loaded.journal,primaryTeamPool());
+  const base=dashboard(current,loaded.storage,loaded.updated);
   const forecasts=[...new Map([...base.forecasts,...base.minute_forecasts].map(f=>[f.forecast_id,f])).values()];
-  const rawForecasts=[...new Map([...loaded.journal.forecasts,...supplementForecasts(loaded.journal)].map(f=>[f.forecast_id,f])).values()];
-  return {settings:settings?JSON.parse(settings.payload) as PaperSettings:defaultPaperSettings(),settingsPersisted:!!settings,quotes:quotes.results.map(r=>JSON.parse(r.payload) as OddsQuote),bets:bets.results.map(r=>JSON.parse(r.payload) as PaperBet),forecasts,rawForecasts,observations:loaded.journal.observations};
+  const rawForecasts=[...new Map([...current.forecasts,...supplementForecasts(current)].map(f=>[f.forecast_id,f])).values()];
+  return {settings:settings?JSON.parse(settings.payload) as PaperSettings:defaultPaperSettings(),settingsPersisted:!!settings,quotes:quotes.results.map(r=>JSON.parse(r.payload) as OddsQuote).filter(q=>rawForecasts.some(f=>f.forecast_id===q.forecast_id)),bets:bets.results.map(r=>JSON.parse(r.payload) as PaperBet).filter(b=>rawForecasts.some(f=>f.forecast_id===b.forecast_id)),forecasts,rawForecasts,observations:current.observations};
 }
 function compute(p:Awaited<ReturnType<typeof loadPaper>>){return paperDashboard(p.settings,p.quotes,p.bets,p.rawForecasts,p.observations);}
 export async function loadBettingContext(): Promise<BettingContext> {
-  const rows = await db().prepare("SELECT key,payload FROM dota_analysis_records WHERE key IN ('state:current_patch','state:betting_health','state:roster_alerts') OR key LIKE 'fixture:%'").all<{key:string;payload:string}>();
+  const rows = await db().prepare("SELECT key,payload FROM dota_analysis_records WHERE key IN ('state:current_patch','state:betting_health','state:roster_alerts','state:expansion') OR key LIKE 'fixture:%'").all<{key:string;payload:string}>();
   const records = Object.fromEntries(rows.results.map(r=>[r.key,JSON.parse(r.payload)]));
-  return {patch:records['state:current_patch'] ?? null, health:records['state:betting_health'] ?? null, alerts:records['state:roster_alerts'] ?? {}, fixtures:rows.results.filter(r=>r.key.startsWith('fixture:')).map(r=>JSON.parse(r.payload))};
+  return {expansion:records['state:expansion'],patch:records['state:current_patch'] ?? null, health:records['state:betting_health'] ?? null, alerts:records['state:roster_alerts'] ?? {}, fixtures:rows.results.filter(r=>r.key.startsWith('fixture:')).map(r=>JSON.parse(r.payload))};
 }
 export async function readPaperDashboard(){
   const [p,context]=await Promise.all([loadPaper(),loadBettingContext()]);
   const computed=compute(p),now=Date.now();
   const uncertainty_pool=computed.eligible_forecasts.map(f=>({forecast_id:f.forecast_id,fixture_id:f.fixture_id,reason:bettingContextReason(f,context,now)})).filter(x=>x.reason);
-  return {...computed,eligible_forecasts:computed.eligible_forecasts.filter(f=>!bettingContextReason(f,context,now)),uncertainty_pool,value_policy:valuePolicy(env),forecasts:p.forecasts,settings_persisted:p.settingsPersisted,data_mode:env.ODDSLINK_API_KEY?'oddslink_api_and_manual':'oddslink_guest_and_manual',automatic_odds_feed_configured:env.AUTO_PAPER_ENABLED!=='false',generated_at:new Date(now).toISOString(),source_note:'Проверка линии каждые 10 минут при настроенном серверном расписании и доступной квоте OddsLink. Новые ставки проходят фильтры состава, текущего патча и ожидаемой доходности. Токены OpenAI для этого цикла не используются.'};
+  return {...computed,eligible_forecasts:computed.eligible_forecasts.filter(f=>!bettingContextReason(f,context,now)),uncertainty_pool,value_policy:valuePolicy(env),forecasts:p.forecasts,settings_persisted:p.settingsPersisted,data_mode:env.ODDSLINK_API_KEY?'oddslink_api_and_manual':'oddslink_guest_and_manual',automatic_odds_feed_configured:env.AUTO_PAPER_ENABLED!=='false',generated_at:new Date(now).toISOString(),source_note:'Проверка линии каждые 10 минут при настроенном серверном расписании и доступной квоте OddsLink. Новые ставки проходят фильтры текущего патча и ожидаемой доходности. Сведения о составе — информационные. Токены OpenAI для этого цикла не используются.'};
 }
 
 // All balance-affecting writes share a database lease. It prevents two tabs or
@@ -78,6 +91,19 @@ export async function recordOddsQuote(value:unknown,entryMethod:'manual'|'agent'
   });
 }
 
+export async function prepareBetForecast(f:Forecast):Promise<Forecast>{
+  const now=Date.now(),context=await loadBettingContext();
+  const risk=bettingContextReason(f,context,now);invariant(!risk,risk??'Нет подтверждения матча.');
+  invariant(!!context.health&&now-Date.parse(context.health.verified_at)<=600000,'Для ставки обновите историю: последняя успешная загрузка старше 10 минут.');
+  const fixture=context.fixtures.find(x=>x.team_a_id===String(f.team_a_id)&&x.team_b_id===String(f.team_b_id)&&Date.parse(x.scheduled_start_utc)===Date.parse(f.scheduled_start_utc));
+  invariant(fixture,'Подтверждённая серия не найдена.');
+  const [rows,verified,loaded]=await Promise.all([
+    db().prepare("SELECT payload FROM dota_analysis_records WHERE key LIKE 'match:%'").all<{payload:string}>(),
+    db().prepare("SELECT payload FROM dota_analysis_records WHERE key LIKE 'verified:%'").all<{payload:string}>(),loadJournal()]);
+  const history=mergeVerifiedSeries(historyFromMatches(historySeed as AnalysisHistory,rows.results.map(r=>JSON.parse(r.payload)),loaded.journal,now),verified.results.flatMap(r=>JSON.parse(r.payload) as AnalysisSeries[]));
+  return {...recalculateBetForecast(f,context.expansion?expansionHistory(history,context.expansion,now):history,fixture,now),...(context.expansion?{pool_snapshot_at:context.expansion.at,pool_policy:context.expansion.version}:{})};
+}
+
 export async function recordPaperBet(value:unknown){
   const input=object(value);
   return withLock(async owner=>{
@@ -87,7 +113,8 @@ export async function recordPaperBet(value:unknown){
     const f=p.forecasts.find(f=>f.forecast_id===q.forecast_id);invariant(f,'Прогноз не найден.');
     const old=p.bets.find(b=>b.bet_id===betId);
     if(old){
-      const candidate=validateBet({...input,bet_id:betId,forecast_id:q.forecast_id,stake:input.stake??old.stake,placed_utc:old.placed_utc,policy_version:old.policy_version,policy_snapshot:old.policy_snapshot},q,{...f,status:'pending'},Date.parse(old.placed_utc),true);
+      const snapshot=checkedBetSnapshot(f,old.analysis_snapshot,Date.parse(old.placed_utc));
+      const candidate={...validateBet({...input,bet_id:betId,forecast_id:q.forecast_id,stake:input.stake??old.stake,placed_utc:old.placed_utc,policy_version:old.policy_version,policy_snapshot:old.policy_snapshot},q,{...snapshot,status:'pending'},Date.parse(old.placed_utc),true),...(old.analysis_snapshot?{analysis_snapshot:old.analysis_snapshot}:{})};
       if(canonical(candidate)!==canonical(old))throw new DataError('Зафиксированную виртуальную ставку нельзя изменить.',409);
       return {ok:true,inserted:false,bet:old};
     }
@@ -98,7 +125,8 @@ export async function recordPaperBet(value:unknown){
     const existing=p.bets.map(b=>p.rawForecasts.find(x=>x.forecast_id===b.forecast_id)).filter(x=>!!x);
     invariant(existing.filter(x=>x.fixture_id===f.fixture_id).length<2,'На серию уже зарегистрированы две ставки.');
     invariant(!existing.some(x=>sameBetFamily(x,f)),'На это семейство рынков серии ставка уже зарегистрирована.');
-    const bet=validateBet({...input,bet_id:betId,forecast_id:q.forecast_id,quote_id:q.quote_id,stake:input.stake??p.settings.default_stake,placed_utc:new Date(now).toISOString(),policy_version:VALUE_POLICY_VERSION,policy_snapshot:valuePolicy(env)},q,f,now);
+    const recalculated=await prepareBetForecast(f),placed=Date.now();
+    const bet={...validateBet({...input,bet_id:betId,forecast_id:q.forecast_id,quote_id:q.quote_id,stake:input.stake??p.settings.default_stake,placed_utc:new Date(placed).toISOString(),policy_version:VALUE_POLICY_VERSION,policy_snapshot:valuePolicy(env)},q,{...recalculated,status:'pending'},placed),analysis_snapshot:recalculated};
     const available=compute(p).metrics.available_bankroll;
     invariant(Math.round(bet.stake*100)<=Math.round(available*100),'В виртуальном банке недостаточно свободных средств.');
     const statements:D1PreparedStatement[]=[];

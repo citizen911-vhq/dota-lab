@@ -3,6 +3,7 @@ export type Market = 'map_handicap' | 'series_winner' | 'map_kills' | 'map_durat
 export interface Forecast {
   forecast_id: string; fixture_id: string; team_a: string; team_b: string;
   scheduled_start_utc: string; created_utc: string; data_cutoff_utc: string;
+  best_of?: 2 | 3;
   cohort_date: string; model_version: string; selection_version: string;
   market: Market; family: string; selection: string; threshold: number | null;
   probability: number; label: string; map_number: number | null;
