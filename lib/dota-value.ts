@@ -1,6 +1,7 @@
 import type { Forecast } from './dota-types';
 
 export const ODDS_REFRESH_MS = 10 * 60_000;
+export const MAX_PAPER_BETS_PER_SERIES = 3;
 export interface ValuePolicy { min_odds: number; min_ev: number; probability_reserve: number }
 export const DEFAULT_VALUE_POLICY: ValuePolicy = { min_odds: 1.7, min_ev: 0.05, probability_reserve: 0.03 };
 export const VALUE_POLICY_VERSION = 'expected-value-v1';
@@ -32,8 +33,10 @@ export function evaluateValue(probability: number, odds: number, policy: ValuePo
   return { eligible: !reason, expected_value: ev, conservative_ev: conservative, probability_used: p, reason };
 }
 
-/** Different total lines on the same map are correlated; permit only one per family. */
+/** One bet per market type. Winner and handicap are separate slots, not independent risks.
+ * Keep stored Forecast.family unchanged so historical forecast/bet snapshots stay valid.
+ * Alternate sides and total/handicap lines still share their market's single slot.
+ */
 export function sameBetFamily(a: Forecast, b: Forecast): boolean {
-  const family = (f: Forecast) => ['series_winner', 'map_handicap'].includes(f.market) ? 'series_result' : f.market;
-  return a.fixture_id === b.fixture_id && family(a) === family(b);
+  return a.fixture_id === b.fixture_id && a.market === b.market;
 }

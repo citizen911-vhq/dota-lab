@@ -1,5 +1,15 @@
 import type { Forecast } from './dota-types';
+import { sameTeamName } from './dota-team-identity';
 type Obj = Record<string, any>;
+const duplicateSources = new WeakMap<Obj, Obj[]>();
+const normalizedLabel = (value: unknown) => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+function sameTournament(a: Obj, b: Obj): boolean {
+  const ak = normalizedLabel(a.tournament?.key), bk = normalizedLabel(b.tournament?.key);
+  const at = normalizedLabel(a.tournament?.title), bt = normalizedLabel(b.tournament?.title);
+  // Missing evidence is not permission to merge; never fuzzy-match tournament names.
+  return !!((ak && bk && ak === bk) || (at && bt && at === bt)) &&
+    !(ak && bk && ak !== bk) && !(at && bt && at !== bt);
+}
 // Fixed priority, independent of probability and price. No exchanges/prediction markets.
 export const ODDSLINK_BOOKS = ['pinnacle', '1xbet', 'thunderpick', 'bet365', 'stake'];
 export const ODDSLINK_PATH = '/v1/sports/dota2/odds?markets=h2h,maps_handicap,kills_total&periods=full,map1&oddsFormat=decimal';
@@ -11,19 +21,42 @@ function candidateQuote(bookKey:string,eventId:string,key:string,period:string,o
 const same = (a: unknown, b: string) => typeof a === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
 const fresh = (v: unknown, now: number) => typeof v === 'string' && Number.isFinite(Date.parse(v)) && Date.parse(v) <= now && now - Date.parse(v) <= 600_000;
 export interface ScheduleProof { team_a: string; team_b: string; scheduled_start_utc: string; best_of: number; status: string; verified_at: string; source_url: string }
-function pair(e: Obj, a: string, b: string) { return (same(e.home_team, a) && same(e.away_team, b)) || (same(e.home_team, b) && same(e.away_team, a)); }
+function pair(e: Obj, a: string, b: string, aId?: unknown, bId?: unknown) { return (sameTeamName(e.home_team, a, aId) && sameTeamName(e.away_team, b, bId)) || (sameTeamName(e.home_team, b, bId) && sameTeamName(e.away_team, a, aId)); }
 export function oddsLinkEvents(rows: unknown, f: Forecast, proofs: ScheduleProof[], now: number): Obj[] {
   if (!Array.isArray(rows) || !Number.isFinite(Date.parse(f.scheduled_start_utc)) || Date.parse(f.scheduled_start_utc) <= now) return [];
   const verified = proofs.some(p => {
     let source = false;
     try { const u = new URL(p.source_url); source = u.protocol === 'https:' && ['cyberscore.live', 'www.cyberscore.live', 'liquipedia.net', 'dota.haglund.dev'].includes(u.hostname); } catch {}
-    return source && [2,3].includes(p.best_of) && p.best_of === (f.best_of??3) && p.status === 'scheduled' && Date.parse(p.verified_at) <= now && now - Date.parse(p.verified_at) <= 6 * 3600_000 && Math.abs(Date.parse(p.scheduled_start_utc) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair({ home_team: p.team_a, away_team: p.team_b }, f.team_a, f.team_b);
+    return source && [2,3].includes(p.best_of) && p.best_of === (f.best_of??3) && p.status === 'scheduled' && Date.parse(p.verified_at) <= now && now - Date.parse(p.verified_at) <= 6 * 3600_000 && Math.abs(Date.parse(p.scheduled_start_utc) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair({ home_team: p.team_a, away_team: p.team_b }, f.team_a, f.team_b, f.team_a_id, f.team_b_id);
   });
   if (!verified) return [];
-  return rows.filter(e => e && typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 200 && e.sport_key === 'dota2' && e.status === 'scheduled' && e.is_live === false && (e.best_of == null || e.best_of === (f.best_of??3)) && Date.parse(e.commence_time) > now && Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair(e, f.team_a, f.team_b));
+  const matches = rows.filter(e => e && typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 200 && e.sport_key === 'dota2' && Date.parse(e.commence_time) > now && Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) <= 60_000 && pair(e, f.team_a, f.team_b, f.team_a_id, f.team_b_id));
+  // Check conflicting copies before filtering, so a BO2/live copy cannot be hidden by a BO3 copy.
+  if (matches.some(e => e.status !== 'scheduled' || e.is_live !== false || (e.best_of != null && e.best_of !== (f.best_of??3)))) return [];
+  if (matches.length <= 1) return matches;
+  if (!matches.every(e => Date.parse(e.commence_time) === Date.parse(matches[0].commence_time) && sameTournament(e, matches[0]))) return matches;
+  const merged = {...matches[0]};
+  duplicateSources.set(merged, matches);
+  return [merged];
 }
-export function oddsLinkQuote(e: Obj, f: Forecast, now: number) {
-  if (e.sport_key !== 'dota2' || e.status !== 'scheduled' || e.is_live !== false || !(Date.parse(e.commence_time) > now) || !pair(e, f.team_a, f.team_b) || !Number.isFinite(Date.parse(f.scheduled_start_utc)) || Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) > 60_000) return null;
+export function oddsLinkQuote(e: Obj, f: Forecast, now: number): ReturnType<typeof candidateQuote> | null {
+  const sources = duplicateSources.get(e);
+  if (sources) {
+    let best: ReturnType<typeof candidateQuote> | null = null;
+    for (const bookKey of ODDSLINK_BOOKS) {
+      const quotes = sources.map(source => oddsLinkQuote({...source, bookmakers: Array.isArray(source.bookmakers) ? source.bookmakers.filter((b: Obj) => b?.key === bookKey) : []}, f, now))
+        .filter((q): q is NonNullable<typeof q> => q !== null);
+      const newest = Math.max(...quotes.map(q => Date.parse(q.observed_utc)));
+      const current = quotes.filter(q => Date.parse(q.observed_utc) === newest);
+      // One book cannot quote two different prices at the same instant. Other books remain usable.
+      if (!current.length || new Set(current.map(q => q.decimal_odds)).size !== 1) continue;
+      current.sort((a,b) => a.source_market_label.localeCompare(b.source_market_label));
+      const quote = current[0];
+      if (!best || quote.decimal_odds > best.decimal_odds) best = quote;
+    }
+    return best;
+  }
+  if (e.sport_key !== 'dota2' || e.status !== 'scheduled' || e.is_live !== false || !(Date.parse(e.commence_time) > now) || !pair(e, f.team_a, f.team_b, f.team_a_id, f.team_b_id) || !Number.isFinite(Date.parse(f.scheduled_start_utc)) || Math.abs(Date.parse(e.commence_time) - Date.parse(f.scheduled_start_utc)) > 60_000) return null;
   const key = f.market === 'series_winner' ? 'h2h' : f.market === 'map_handicap' ? 'maps_handicap' : f.market === 'map_kills' && f.map_number === 1 ? 'kills_total' : null;
   if (!key || !Array.isArray(e.bookmakers)) return null;
   if (f.market === 'map_kills' ? !['over', 'under'].includes(f.selection) || typeof f.threshold !== 'number' || f.threshold % 1 !== 0.5 : !['a', 'b'].includes(f.selection)) return null;
@@ -38,7 +71,7 @@ export function oddsLinkQuote(e: Obj, f: Forecast, now: number) {
       if (f.market === 'map_kills' ? m.period !== 'map1' : m.period != null && m.period !== 'full') continue;
       for (const o of m.outcomes) {
         if (!o || typeof o.price !== 'number' || !Number.isFinite(o.price) || o.price < 1.01 || o.price > 1000) continue;
-        if (f.market === 'map_kills' ? !same(o.name, f.selection) || o.point !== f.threshold : !same(o.name, target)) continue;
+        if (f.market === 'map_kills' ? !same(o.name, f.selection) || o.point !== f.threshold : !sameTeamName(o.name, target, f.selection === 'a' ? f.team_a_id : f.team_b_id)) continue;
         // Signed points apply to the named team, including the away team.
         if (f.market === 'map_handicap' && (typeof o.point !== 'number' || o.point !== f.threshold)) continue;
         if (f.market === 'series_winner' && o.point != null) continue;

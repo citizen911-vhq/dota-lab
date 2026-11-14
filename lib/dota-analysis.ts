@@ -182,7 +182,7 @@ export function buildForecasts(history: AnalysisHistory, fixture: FixtureInput, 
   if (![2,3].includes(fixture.best_of) || fixture.status !== 'scheduled') return skip('Для прогноза нужна подтверждённая будущая серия BO2 или BO3.');
   if (!validUrl(fixture.source_url)) return skip('Нет корректной HTTPS-ссылки на расписание.');
   const day = new Date(startMs + 9*3600000).toISOString().slice(0,10);
-  if (startMs < EXPERIMENT_START_UTC || startMs >= EXPERIMENT_END_UTC) return skip('На главной анализируются только матчи с 14 ноября по 13 декабря по времени Якутска.');
+  if (startMs < EXPERIMENT_START_UTC || startMs >= EXPERIMENT_END_UTC) return skip('Матч вне периода эксперимента: с 13 ноября 18:00 до 13 декабря 18:00 МСК.');
   if (fixture.team_a_id === fixture.team_b_id || !numericId(fixture.team_a_id) || !numericId(fixture.team_b_id)) return skip('Обе команды должны иметь подтверждённые Valve ID из каталога OpenDota.');
   if (typeof fixture.patch_id!=='string' || !fixture.patch_id.trim()) return skip('Текущий патч не подтверждён: прогноз и ставка пропущены.');
   const warnings=rosterNotices(fixture,history,nowMs);

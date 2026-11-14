@@ -30,6 +30,12 @@ test('auth, quota and transport failures are redacted and not retried',async()=>
 test('missing key never sends a request',async()=>{
  const r=await searchPublicOdds('',[],[],now,async()=>{throw Error('Unexpected fetch');});assert.equal(r.status,'blocked');assert.match(r.reason,/отсутствует/);
 });
+test('provider Retry-After survives into the report for manual refresh protection',async()=>{
+ const before=Date.now();
+ const r=await searchPublicOdds('unit-secret',[],[],now,async()=>new Response('',{status:429,headers:{'Retry-After':'120'}}));
+ assert.ok(Date.parse(r.retry_after)>=before+120000);
+ assert.ok(Date.parse(r.retry_after)<=Date.now()+120000);
+});
 
 test('redirect responses are rejected without following Location',async()=>{
  let calls=0; const r=await searchPublicOdds('unit-secret',[],[],now,async(url,opts)=>{calls++;assert.equal(opts.redirect,'manual');return new Response('',{status:302,headers:{Location:'https://example.com'}});});

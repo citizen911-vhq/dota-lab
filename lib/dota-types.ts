@@ -1,6 +1,7 @@
 export type Status = 'pending' | 'won' | 'lost' | 'void';
 export type Market = 'map_handicap' | 'series_winner' | 'map_kills' | 'map_duration';
 export interface Forecast {
+  pool_warnings?: string[];
   forecast_id: string; fixture_id: string; team_a: string; team_b: string;
   scheduled_start_utc: string; created_utc: string; data_cutoff_utc: string;
   best_of?: 2 | 3;
@@ -12,6 +13,9 @@ export interface Forecast {
   sources?: string[]; [key: string]: unknown;
 }
 export interface Observation {
+  /** Proven BO3 winner; does not imply an exact series score or map order. */
+  series_winner?: 'a' | 'b' | null;
+  winner_map_ids?: string[];
   observation_id: string; fixture_id: string; recorded_utc: string; sources: string[];
   series_score?: [number, number] | null; series_void?: boolean; map1_void?: boolean;
   map1?: { match_id?: string | number | null; kills_a?: number | null; kills_b?: number | null; duration_seconds?: number | null } | null;

@@ -26,7 +26,9 @@ export interface NormalizedMatch {
   sources: string[];
 }
 
+export interface SkippedOpenDotaMap { match_id: string; reason: string; checked_at: string; retry_after: string }
 export interface OpenDotaCollection {
+  skipped_maps: SkippedOpenDotaMap[];
   matches: NormalizedMatch[];
   warnings: string[];
   healthy: boolean;
@@ -46,7 +48,7 @@ export const TRACKED_TEAM_IDS = ['55', '10020555', '10242397', '10252232', '5014
 const LEGACY_NAMES: Record<string,string> = {'55':'Power Rangers','10020555':'PlayTime','10242397':'Xipto Esports','10252232':'Zenith','5014799':'Nemiga Gaming','10212329':'Team Synapse','10331884':'Froglings','10271553':'potn9ki'};
 const EXCLUDED_REMAKES = new Set(['9074604699', '9044544461', '9074615771']);
 const API = 'https://api.opendota.com/api';
-const MAX_DETAILS = 12;
+const MAX_DETAILS = 40;
 const DEFAULT_SINCE_SECONDS = HISTORY_START_MS / 1000;
 type Raw = Record<string, unknown>;
 type Candidate = { id: string; start: number; rows: Raw[]; sources: Set<string> };
@@ -93,7 +95,17 @@ function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings:
   const league = id(raw.leagueid);
   if (matchId !== candidate.id || !radiant || !dire || radiant === dire || !league || (!eligible.has(radiant) && !eligible.has(dire)) ||
       !integer(raw.start_time, 1) || !integer(raw.duration, 1) || !integer(raw.radiant_score) || !integer(raw.dire_score) || typeof raw.radiant_win !== 'boolean') {
-    warnings.push(`OpenDota ${candidate.id}: неполные или противоречивые поля карты; запись не принята.`);
+    const fields = [
+      matchId !== candidate.id ? 'match_id не совпадает' : '',
+      !radiant ? 'radiant_team_id отсутствует или некорректен' : '',
+      !dire ? 'dire_team_id отсутствует или некорректен' : '',
+      radiant && radiant === dire ? 'одинаковые ID команд' : '',
+      !league ? 'leagueid отсутствует или некорректен' : '',
+      !eligible.has(radiant ?? '') && !eligible.has(dire ?? '') ? 'нет команды из анализируемой выборки' : '',
+      ...['start_time','duration','radiant_score','dire_score'].filter(k=>!integer(raw[k],k==='start_time'||k==='duration'?1:0)),
+      typeof raw.radiant_win !== 'boolean' ? 'radiant_win' : '',
+    ].filter(Boolean);
+    warnings.push(`OpenDota ${candidate.id}: запись не принята — ${fields.join(', ')}.`);
     return null;
   }
   if (raw.start_time + raw.duration >= nowSeconds) {
@@ -127,8 +139,13 @@ function normalize(raw: Raw, candidate: Candidate, nowSeconds: number, warnings:
   };
 }
 
-/** No retries or redirects. Team discovery is bounded; at most 12 match details are read per cycle. */
-export async function collectOpenDota(knownIds: string[], now = Date.now(), fetchFn: typeof fetch = fetch, sinceSeconds = DEFAULT_SINCE_SECONDS, apiKey?: string, previousPool: DynamicTeamPoolEntry[] = [], requestBudget = Number.MAX_SAFE_INTEGER, usePrimaryPool = false, queuedTeamIds:string[]=[]): Promise<OpenDotaCollection> {
+/** Targeted result recovery uses the same map validation as history collection. */
+export function normalizeResultMap(raw: unknown, matchId: string, teamIds: string[], indexRows: Raw[], sources: string[], now: number, warnings: string[]): NormalizedMatch | null {
+  return object(raw)?normalize(raw,{id:matchId,start:0,rows:indexRows,sources:new Set(sources)},Math.floor(now/1000),warnings,new Set(teamIds),new Map()):null;
+}
+
+/** No retries or redirects. Team discovery is bounded; at most 40 match details are read per cycle. */
+export async function collectOpenDota(knownIds: string[], now = Date.now(), fetchFn: typeof fetch = fetch, sinceSeconds = DEFAULT_SINCE_SECONDS, apiKey?: string, previousPool: DynamicTeamPoolEntry[] = [], requestBudget = Number.MAX_SAFE_INTEGER, usePrimaryPool = false, queuedTeamIds:string[]=[], previousSkipped:SkippedOpenDotaMap[]=[], forceRefresh=false): Promise<OpenDotaCollection> {
   if (!Number.isFinite(now) || !integer(sinceSeconds, 1)) throw new Error('Некорректное время сбора OpenDota.');
   if (!integer(requestBudget)) throw new Error('Некорректный лимит запросов OpenDota.');
   // Official OpenAPI securitySchemes also permits Authorization: Bearer:
@@ -137,6 +154,8 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
   const authenticationKey = typeof apiKey === 'string' ? apiKey.trim() : '';
   const nowSeconds = Math.floor(now / 1000);
   const known = new Set(knownIds.map(value => String(value).replace(/^valve:/, '')));
+  const skipped = new Map(previousSkipped.filter(m=>Date.parse(m.checked_at)<=now&&Date.parse(m.retry_after)>now).map(m=>[m.match_id,m]));
+  if (!forceRefresh) for (const matchId of skipped.keys()) known.add(matchId);
   const warnings = ['Индексы OpenDota имеют подтверждённые пропуски: обновление дополняет сохранённую историю, но не доказывает полноту последних 30 карт.'];
   const candidates = new Map<string, Candidate>();
   let requested = 0;
@@ -268,7 +287,9 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
   }
   const frequent = usePrimaryPool ? [] : qualifyFrequentTier1Teams(core, directory, histories);
   const teamPool = [...core, ...frequent];
-  const eligible = new Set(teamPool.map(team => team.id));
+  // A queued opponent needs its own history against ALL opponents for analysis.
+  // This does not promote it into teamPool or the TOP-20 ranking.
+  const eligible = new Set([...teamPool.map(team => team.id),...(usePrimaryPool?candidateIds:[])]);
   const names = new Map<string,string>(Object.entries(LEGACY_NAMES));
   for (const team of directory) names.set(team.id, team.name);
 
@@ -298,8 +319,6 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
       const matchId = id(row.match_id);
       if (!matchId || known.has(matchId) || EXCLUDED_REMAKES.has(matchId) || !integer(row.start_time, 1) || row.start_time >= nowSeconds || row.start_time < sinceSeconds ||
           (!eligible.has(id(row.radiant_team_id) ?? '') && !eligible.has(id(row.dire_team_id) ?? ''))) continue;
-      // Candidate history is only useful against admitted teams, and only in the rolling month.
-      if(usePrimaryPool&&index.team&&candidateIds.includes(index.team)&&row.start_time<nowSeconds-30*86400)continue;
       const candidate = candidates.get(matchId) ?? { id: matchId, start: row.start_time, rows: [], sources: new Set<string>() };
       candidate.rows.push(row);
       candidate.sources.add(url);
@@ -309,21 +328,31 @@ export async function collectOpenDota(knownIds: string[], now = Date.now(), fetc
   const queue = [...candidates.values()].sort((a, b) => b.start - a.start || Number(b.id) - Number(a.id));
   const matches: NormalizedMatch[] = [];
   const accepted = new Set<string>();
+  let rejectedDetails = 0;
   for (const candidate of queue.slice(0, MAX_DETAILS)) {
     if (stopped) break;
     attemptedDetails++;
     const raw = await request(`${API}/matches/${candidate.id}`);
     if (!object(raw)) continue;
+    skipped.delete(candidate.id);
+    const warningIndex = warnings.length;
     const match = normalize(raw, candidate, nowSeconds, warnings, eligible, names);
     if (match) { matches.push(match); accepted.add(match.id); }
+    else if (!(integer(raw.start_time,1) && integer(raw.duration,1) && raw.start_time + raw.duration >= nowSeconds)) {
+      rejectedDetails++;
+      skipped.set(candidate.id,{match_id:candidate.id,reason:warnings.slice(warningIndex).join(' '),checked_at:new Date(now).toISOString(),retry_after:new Date(now+86400000).toISOString()});
+    }
   }
-  if (queue.length > MAX_DETAILS) warnings.push(`OpenDota: ${queue.length - MAX_DETAILS} новых карт отложено из-за лимита 12 подробных запросов за цикл.`);
+  if (queue.length > MAX_DETAILS) warnings.push(`OpenDota: ${queue.length - MAX_DETAILS} новых карт отложено из-за лимита ${MAX_DETAILS} подробных запросов за цикл.`);
+  if (skipped.size) warnings.push(`OpenDota: ${skipped.size} некорректных карт исключено из расчётов и очереди догрузки. Повторная проверка каждой — через 24 часа после отказа; анализ остальных данных продолжается.`);
+  for (const entry of skipped.values()) if (!warnings.includes(entry.reason)) warnings.push(entry.reason);
   return {
+    skipped_maps: [...skipped.values()],
     matches, warnings,
-    healthy: directoryHealthy && successfulHistoryIds.size === core.length + candidateIds.length && successfulIndexes === core.length + candidateIds.length + 2 && attemptedDetails === matches.length,
+    healthy: directoryHealthy && successfulHistoryIds.size === core.length + candidateIds.length && successfulIndexes === core.length + candidateIds.length + 2 && attemptedDetails === matches.length + rejectedDetails,
     successful_indexes: successfulIndexes,
     requested, discovered: queue.length,
-    unfetched_ids: queue.filter(candidate => !accepted.has(candidate.id)).map(candidate => candidate.id),
+    unfetched_ids: queue.filter(candidate => !accepted.has(candidate.id) && !skipped.has(candidate.id)).map(candidate => candidate.id),
     fetched_at: new Date(now).toISOString(),
     team_pool: teamPool,
     team_directory: directory,

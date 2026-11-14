@@ -2,12 +2,18 @@ import handler from "vinext/server/fetch-handler";
 import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
 import { runPrematchRefresh } from "../lib/dota-auto-store";
+import { technicalFailure } from "../lib/dota-technical-core";
+import { recordTechnicalError } from "../lib/dota-technical-log";
 
 const worker = {
   scheduled(_event: ScheduledController, _env: Cloudflare.Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runPrematchRefresh());
+    ctx.waitUntil(runPrematchRefresh().catch(async error => {
+      const failure = technicalFailure(error, '/internal/scheduled/prematch-refresh');
+      if (failure) await recordTechnicalError({ ...failure, code: 'SCHEDULED_REFRESH_FAILED' });
+      throw error;
+    }));
   },
-  fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
+  async fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
     let binding = ctx.props?.CONNECTORS;
     // Local preview emulates the same request-scoped capability. This branch and
     // the auxiliary service binding are absent from production builds.
@@ -27,7 +33,14 @@ const worker = {
         },
       };
     }
-    return runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
+    try {
+      return await runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
+    } catch (error) {
+      // Responses returned by fail() are already recorded; only uncaught throws arrive here.
+      const failure = technicalFailure(error, new URL(request.url).pathname);
+      if (failure) await recordTechnicalError({ ...failure, code: 'WORKER_FETCH_FAILED' });
+      throw error;
+    }
   },
 };
 

@@ -1,15 +1,15 @@
 import {PRIMARY_TEAM_POOL,primaryTeamPool,type DynamicTeamPoolEntry,type OpenDotaTeamDirectoryEntry} from './dota-team-pool';
 import type {AnalysisHistory,AnalysisMap} from './dota-analysis-types';
 
-export const EXPANSION_POLICY={version:'anchored-top20-v1',maxTeams:20,minMaps:15,windowDays:30,maxMaps:30,halfLifeDays:14,priorMaps:10,minScore:0.5} as const;
+export const EXPANSION_POLICY={version:'anchored-top20-v3',maxTeams:20,minMaps:15,windowDays:30,maxMaps:30,halfLifeDays:14,priorMaps:10,minScore:0.5,analysis:'pool-versus-verified-opponents',refresh:'completed-map-evidence'} as const;
 const DAY=86400000,coreIds=new Set<string>(PRIMARY_TEAM_POOL.map(t=>t[0]));
 export type Admission={id:string;from:string;until?:string};
 export type ExpansionRow={team_id:string;team:string;rank:number|null;maps:number;wins:number;losses:number;win_rate:number|null;score:number;effective_maps:number;status:'core'|'admitted'|'candidate'|'insufficient'|'watch';reason:string;match_ids:string[]};
-export type ExpansionSnapshot={version:string;at:string;patch_id:string|null;rows:ExpansionRow[];admissions:Admission[];active_ids:string[];healthy:boolean};
+export type ExpansionSnapshot={version:string;at:string;patch_id:string|null;rows:ExpansionRow[];admissions:Admission[];active_ids:string[];healthy:boolean;analysis_team_ids?:string[];analysis_verified_at?:string;analysis_healthy?:boolean;result_signature?:string};
 const eligibleMap=(m:AnalysisMap,now:number,patch:string|null)=>m.forecast_sample!==false&&!m.series_excluded_reason&&patch!==null&&m.patch_id===patch&&/^[1-9]\d*$/.test(m.team_id)&&/^[1-9]\d*$/.test(m.opponent_team_id)&&/^[1-9]\d*$/.test(m.match_id)&&m.team_id!==m.opponent_team_id&&typeof m.win==='boolean'&&Number.isSafeInteger(m.start_time)&&Number.isInteger(m.duration_seconds)&&m.duration_seconds>0&&m.duration_seconds<=86400&&(m.start_time+m.duration_seconds)*1000<=now&&m.start_time*1000>=now-30*DAY&&(!m.verified_at||Date.parse(m.verified_at)<=now);
 
 /** Prior membership is time-stamped: no same-cycle promotion chains or future membership in backtests. */
-export function expandTeamPool(history:AnalysisHistory,directory:OpenDotaTeamDirectoryEntry[],previous:ExpansionSnapshot|undefined,now:number,patch:string|null,healthy:boolean,watchedIds:string[]=[]):ExpansionSnapshot{
+export function expandTeamPool(history:AnalysisHistory,directory:OpenDotaTeamDirectoryEntry[],previous:ExpansionSnapshot|undefined,now:number,patch:string|null,healthy:boolean,watchedIds:string[]=[],analysisHistoryIds:string[]=[]):ExpansionSnapshot{
   if(!Number.isFinite(now))throw new Error('Invalid ranking time');
   if(previous&&Date.parse(previous.at)>now)throw new Error('Future pool snapshot cannot be used for a historical ranking');
   const metadata=new Map(directory.map(t=>[t.id,t.name]));
@@ -73,7 +73,11 @@ export function expandTeamPool(history:AnalysisHistory,directory:OpenDotaTeamDir
     else if(r.maps<15){r.status='insufficient';r.reason=`Нужно ещё ${15-r.maps} карт против топов`;}
     else{r.status='candidate';r.reason=!directory.some(t=>t.id===r.team_id)?'Нужна проверка команды в каталоге OpenDota':!healthy?'Ожидает успешного обновления истории':r.score<0.5?'Скорректированный WR ниже 50%':'Нет свободного места в TOP-20';}
   }
-  return {version:EXPANSION_POLICY.version,at,patch_id:patch,rows,admissions,active_ids:[...coreIds,...active],healthy};
+  // Analysis permission is not TOP-20 membership. Only current directory IDs
+  // whose own history index was read this cycle qualify as outside opponents.
+  const directoryIds=new Set(directory.map(t=>t.id));
+  const analysis_team_ids=healthy?[...new Set(analysisHistoryIds)].filter(id=>directoryIds.has(id)):[];
+  return {version:EXPANSION_POLICY.version,at,patch_id:patch,rows,admissions,active_ids:[...coreIds,...active],healthy,analysis_team_ids};
 }
 
 export function expansionPool(snapshot:ExpansionSnapshot|undefined,directory:OpenDotaTeamDirectoryEntry[]=[],previous:DynamicTeamPoolEntry[]=[]):DynamicTeamPoolEntry[]{
@@ -87,21 +91,51 @@ export function expansionPool(snapshot:ExpansionSnapshot|undefined,directory:Ope
   return pool;
 }
 
-/** Expanded teams never borrow games against non-top opponents for modelling. */
+/** Ranking qualification never trims a team's prediction history.
+ * sampleTeam applies the current patch, September cutoff, completion/quality
+ * checks and each team's own latest-30 limit. Never revive quarantined maps.
+ */
 export function expansionHistory(history:AnalysisHistory,snapshot:ExpansionSnapshot,now:number):AnalysisHistory{
   if(Date.parse(snapshot.at)>now)throw new Error('Future ranking snapshot');
-  const allowed=new Set(snapshot.active_ids),cutoff=now-30*DAY;
-  return {...history,maps:history.maps.map(m=>{
-    if(coreIds.has(m.team_id))return m;
-    const at=m.start_time*1000;
-    const opponentAllowed=coreIds.has(m.opponent_team_id)||allowed.has(m.opponent_team_id)&&snapshot.admissions.some(a=>a.id===m.opponent_team_id&&Date.parse(a.from)<=at&&(!a.until||at<Date.parse(a.until)));
-    return allowed.has(m.team_id)&&opponentAllowed&&at>=cutoff?m:{...m,forecast_sample:false};
-  })};
+  return history;
 }
 
 export function expansionGate(snapshot:ExpansionSnapshot|undefined,a:string,b:string,now:number):string|null{
   if(!snapshot)return coreIds.has(a)&&coreIds.has(b)?null:'Команда ещё не допущена в TOP-20.';
-  if(!snapshot.healthy||Date.parse(snapshot.at)>now||now-Date.parse(snapshot.at)>600000)return 'Рейтинг TOP-20 требует успешного обновления.';
-  if(!snapshot.active_ids.includes(a)||!snapshot.active_ids.includes(b))return 'Одна из команд в наблюдении или ещё не допущена в TOP-20.';
+  // Ranking age is not data freshness: an unchanged result set stays valid.
+  // Patch/history/quote freshness is checked separately before a bet.
+  if(!snapshot.healthy||!Number.isFinite(Date.parse(snapshot.at))||Date.parse(snapshot.at)>now)return 'Нет подтверждённой базы рейтинга TOP-20.';
+  if(snapshot.analysis_healthy===false)return 'Последняя проверка истории не завершена; анализ отложен.';
+  if(snapshot.analysis_verified_at&&(!Number.isFinite(Date.parse(snapshot.analysis_verified_at))||Date.parse(snapshot.analysis_verified_at)>now))return 'Некорректное время проверки истории.';
+  if(a===b||!snapshot.active_ids.includes(a)&&!snapshot.active_ids.includes(b))return 'В матче нет команды из активного пула TOP-20.';
+  const known=new Set([...snapshot.active_ids,...(snapshot.analysis_team_ids??[])]);
+  if(!known.has(a)||!known.has(b))return 'Для соперника пула нужны подтверждённый Valve ID и успешная загрузка собственной истории.';
   return null;
+}
+
+/** A poll updates collection evidence; only changed completed-map facts (or a
+ * patch/policy transition) advance ranking time, positions and admission dates.
+ * verified_at and the clock are deliberately not fingerprint inputs.
+ */
+export async function advanceTeamPool(history:AnalysisHistory,directory:OpenDotaTeamDirectoryEntry[],previous:ExpansionSnapshot|undefined,now:number,patch:string|null,healthy:boolean,watchedIds:string[]=[],analysisHistoryIds:string[]=[]){
+  if(!Number.isFinite(now)||previous&&Date.parse(previous.at)>now)throw new Error('Future or invalid ranking time');
+  const directoryIds=new Set(directory.map(t=>t.id));
+  const evidence={analysis_healthy:healthy,analysis_verified_at:new Date(now).toISOString(),analysis_team_ids:healthy?[...new Set(analysisHistoryIds)].filter(id=>directoryIds.has(id)):[]};
+  if(!healthy&&previous)return {snapshot:{...previous,...evidence},changed:false};
+  const facts=[...new Set(history.maps.filter(m=>m.patch_id===patch&&(m.start_time+m.duration_seconds)*1000<=now&&(!m.verified_at||Date.parse(m.verified_at)<=now)).map(m=>JSON.stringify([m.match_id,m.team_id,m.opponent_team_id,m.start_time,m.duration_seconds,m.win,m.patch_id,m.forecast_sample!==false,m.series_excluded_reason??null])))].sort();
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([EXPANSION_POLICY.version,patch,facts])));
+  const result_signature=[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(previous?.healthy&&previous.result_signature===result_signature)return {snapshot:{...previous,...evidence},changed:false};
+  const snapshot=expandTeamPool(history,directory,previous,now,patch,healthy,watchedIds,analysisHistoryIds);
+  return {snapshot:{...snapshot,...evidence,...(healthy?{result_signature}:{})},changed:healthy};
+}
+
+/** Informational only: never used by value/settlement eligibility checks. */
+export function poolWarnings(snapshot:ExpansionSnapshot|undefined,ids:readonly string[]):string[]{
+  if(!snapshot)return [];
+  return [...new Set(ids)].flatMap(id=>{
+    const row=snapshot.rows.find(r=>r.team_id===id);
+    if(!row)return [`Valve ID ${id}: число карт против топов пока не подтверждено; экспериментальный прогноз.`];
+    return row.maps<EXPANSION_POLICY.minMaps?[`${row.team}: нет 15 карт против топов (${row.maps}/15). Экспериментальный прогноз; отметка не блокирует виртуальную ставку.`]:[];
+  });
 }

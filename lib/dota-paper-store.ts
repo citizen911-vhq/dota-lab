@@ -4,7 +4,7 @@ import {historyFromMatches,mergeVerifiedSeries} from './dota-auto-core';
 import {recalculateBetForecast,checkedBetSnapshot} from './dota-bet-recalculation';
 import type {AnalysisHistory,AnalysisSeries} from './dota-analysis-types';
 import type {Forecast} from './dota-types';
-import {expansionHistory} from './dota-expansion';
+import {expansionHistory,poolWarnings} from './dota-expansion';
 import { experimentJournal } from './dota-experiment';
 import { primaryTeamPool } from './dota-team-pool';
 import { canonical, dashboard, DataError, invariant, supplementForecasts } from './dota-core';
@@ -12,7 +12,7 @@ import { loadJournal } from './dota-store';
 import { defaultPaperSettings, paperDashboard, validateBet, validatePaperSettings, validateQuote } from './dota-paper-core';
 import type { OddsQuote, PaperBet, PaperSettings } from './dota-paper-types';
 import { bettingContextReason, type BettingContext } from './dota-betting-context';
-import { sameBetFamily, valuePolicy, VALUE_POLICY_VERSION } from './dota-value';
+import { MAX_PAPER_BETS_PER_SERIES, sameBetFamily, valuePolicy, VALUE_POLICY_VERSION } from './dota-value';
 
 type Row={id:string;payload:string};
 function db(){if(!env.DB)throw new DataError('Хранилище виртуальных ставок недоступно.',503);return env.DB;}
@@ -101,7 +101,7 @@ export async function prepareBetForecast(f:Forecast):Promise<Forecast>{
     db().prepare("SELECT payload FROM dota_analysis_records WHERE key LIKE 'match:%'").all<{payload:string}>(),
     db().prepare("SELECT payload FROM dota_analysis_records WHERE key LIKE 'verified:%'").all<{payload:string}>(),loadJournal()]);
   const history=mergeVerifiedSeries(historyFromMatches(historySeed as AnalysisHistory,rows.results.map(r=>JSON.parse(r.payload)),loaded.journal,now),verified.results.flatMap(r=>JSON.parse(r.payload) as AnalysisSeries[]));
-  return {...recalculateBetForecast(f,context.expansion?expansionHistory(history,context.expansion,now):history,fixture,now),...(context.expansion?{pool_snapshot_at:context.expansion.at,pool_policy:context.expansion.version}:{})};
+  return {...recalculateBetForecast(f,context.expansion?expansionHistory(history,context.expansion,now):history,fixture,now),pool_warnings:poolWarnings(context.expansion,[String(f.team_a_id),String(f.team_b_id)]),...(context.expansion?{pool_snapshot_at:context.expansion.at,pool_policy:context.expansion.version}:{})};
 }
 
 export async function recordPaperBet(value:unknown){
@@ -123,7 +123,7 @@ export async function recordPaperBet(value:unknown){
     const risk=bettingContextReason(f,await loadBettingContext(),now);
     invariant(!risk,risk??'Матч в пуле неопределённости.');
     const existing=p.bets.map(b=>p.rawForecasts.find(x=>x.forecast_id===b.forecast_id)).filter(x=>!!x);
-    invariant(existing.filter(x=>x.fixture_id===f.fixture_id).length<2,'На серию уже зарегистрированы две ставки.');
+    invariant(existing.filter(x=>x.fixture_id===f.fixture_id).length<MAX_PAPER_BETS_PER_SERIES,`На серию уже зарегистрировано ${MAX_PAPER_BETS_PER_SERIES} ставки.`);
     invariant(!existing.some(x=>sameBetFamily(x,f)),'На это семейство рынков серии ставка уже зарегистрирована.');
     const recalculated=await prepareBetForecast(f),placed=Date.now();
     const bet={...validateBet({...input,bet_id:betId,forecast_id:q.forecast_id,quote_id:q.quote_id,stake:input.stake??p.settings.default_stake,placed_utc:new Date(placed).toISOString(),policy_version:VALUE_POLICY_VERSION,policy_snapshot:valuePolicy(env)},q,{...recalculated,status:'pending'},placed),analysis_snapshot:recalculated};

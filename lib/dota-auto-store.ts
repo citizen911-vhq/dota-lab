@@ -1,7 +1,7 @@
 import { experimentJournal, inCurrentExperiment, JOURNAL_START_MS } from './dota-experiment';
 import { runPaperAuto } from './dota-paper-auto';
 import { rankPrimaryTeams } from './dota-ranking';
-import {expandTeamPool,expansionPool,expansionHistory,expansionGate,EXPANSION_POLICY,type ExpansionSnapshot} from './dota-expansion';
+import {expandTeamPool,advanceTeamPool,poolWarnings,expansionPool,expansionHistory,expansionGate,EXPANSION_POLICY,type ExpansionSnapshot} from './dota-expansion';
 import { runOpenaiSearch } from './dota-openai-store';
 import { env } from 'cloudflare:workers';
 import historySeed from '../data/history-seed.json';
@@ -17,11 +17,16 @@ import { buildForecasts, buildTeamRatings, fixtureKey, sampleTeam, TRACKED_TEAMS
 import { checkedFixture, confirmSeries, firstMapEvidence, historyFromMatches, knownFixture, mergeMatchEvidence, mergeVerifiedSeries, rosterAlerts, TEAM_NAMES } from './dota-auto-core';
 import { canonical, dashboard, DataError, invariant, latestObservations } from './dota-core';
 import { loadJournal, recordResult, syncJournal } from './dota-store';
+import {updateMatchResults} from './dota-result-store';
+import {forecastTeamIds} from './dota-auto-core';
+import {refreshOptions} from './dota-refresh-options';
+import {technicalFailure} from './dota-technical-core';
+import {recordTechnicalError,redactServerTechnicalText} from './dota-technical-log';
 
 type Uncertainty = {fixture_id:string;fixture:string;reason:string};
 type Run = {run_id:string;status:'running'|'ok'|'partial'|'failed';started_at:string;finished_at:string|null;maps_added:number;forecasts_added:number;observations_added:number;fixtures_seen:number;backlog_count:number;source_requests:number;opendota_requests:number;collection_healthy:boolean;rate_limited:boolean;history_maps:number;warnings:string[];skipped:Uncertainty[]};
 type RecordRow = {key:string;payload:string;updated_utc:string};
-type Schedule = {enabled:boolean;id?:string;time?:string;timezone?:string;until?:string};
+type Schedule = {enabled:boolean;id?:string;time?:string;timezone?:string;until?:string;kind?:'local';interval_hours?:number};
 const seed=historySeed as AnalysisHistory;
 const HISTORY_REFRESH_MS=10*60_000;
 // At OpenDota's current $0.01 / 100 calls this is $14.50 per UTC month,
@@ -36,13 +41,14 @@ async function writeRecord(key:string,value:unknown){await db().prepare('INSERT 
 async function openDotaMonthlyUsage(now:number){
   const date=new Date(now),monthStart=new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1)).toISOString();
   const rows=await db().prepare('SELECT payload FROM dota_analysis_runs WHERE started_utc>=?').bind(monthStart).all<{payload:string}>();
+  const resultUsage=(await records('results:usage:'+monthStart.slice(0,7)))[0];
   const used=rows.results.reduce((sum,row)=>{
     try{
       const run=JSON.parse(row.payload) as Partial<Run>;
       const requests=Number(run.opendota_requests??Math.max(0,Number(run.source_requests??0)-2));
       return sum+(Number.isSafeInteger(requests)&&requests>0?requests:0);
     }catch{return sum;}
-  },0);
+  },resultUsage?Number(JSON.parse(resultUsage.payload))||0:0);
   return {month_start_utc:monthStart,cap:OPENDOTA_MONTHLY_REQUEST_CAP,used,remaining:Math.max(0,OPENDOTA_MONTHLY_REQUEST_CAP-used),estimated_usd:used/10_000};
 }
 
@@ -75,19 +81,19 @@ export async function analysisStatus(){
   const currentHistory=mergeVerifiedSeries(historyFromMatches(seed,matchRows.map(r=>JSON.parse(r.payload)),loaded.journal),verified);
   const currentPatchFresh=currentPatch?.patch_id && Date.now()-Date.parse(currentPatch.verified_at)<=10*60000 && Date.parse(currentPatch.verified_at)<=Date.now();
   const teamPool=expansionPool(values['state:expansion'],[],(values['state:team_pool']??[]) as DynamicTeamPoolEntry[]);
-  return {coverage:'dynamic-top20',coverage_note:COVERAGE,tracked_teams:teamPool.length,team_pool:teamPool,baseline_rosters:BASELINE_ROSTERS,roster_policy:'informational-v1',history_maps:new Set([...seed.maps.map(m=>m.match_id),...matchRows.map(r=>(JSON.parse(r.payload) as NormalizedMatch).id)]).size,current_patch:currentPatch??null,uncertainty_pool:recent.length?(values['state:uncertainty_pool']??[]):[],betting_health:values['state:betting_health']??null,team_ratings:currentPatchFresh?buildTeamRatings(currentHistory,Date.now(),currentPatch.patch_id!):[],schedule:values['state:schedule']??null,last_run:recent[0]??null,recent_runs:recent,roster_alerts:values['state:roster_alerts']??{},pending_review:d.fixtures.filter(f=>Date.parse(f.scheduled_start_utc)<Date.now()&&!f.observation?.series_void&&(!f.observation?.series_score||!f.observation?.map1||f.observation.map1.kills_a==null||f.observation.map1.duration_seconds==null)).map(f=>({fixture_id:f.fixture_id,team_a:f.team_a,team_b:f.team_b,scheduled_start_utc:f.scheduled_start_utc,observation:f.observation})),unverified_maps:unknown.slice(-100),unverified_maps_total:unknown.length,evaluation:{summary:d.summary,daily:d.daily,calibration:d.calibration},source_access:{opendota_key_configured:!!env.OPENDOTA_API_KEY},source_budget:{opendota:openDotaBudget,price_assumption:'$0.01 per 100 requests',monthly_ceiling_usd:15},updater_instructions:{service_routes:SERVICE_ROUTES,forecast_window_hours:144,schedule_window_hours:192,bet_recalculation_max_history_age_minutes:10,source:'https://api.opendota.com/api',schedule_source:'https://dota.haglund.dev/v1/matches',fallback_schedule_source:'https://cyberscore.live/en/matches/',rule:'Use the fixed 12-team core plus up to 8 qualified challengers from the rolling TOP-20; roster differences are informational and do not block forecasts or paper bets. Review unverified maps and roster evidence; never infer missing results or identities.',teams:Object.fromEntries(teamPool.map(team=>[team.id,team.name]))}};
+  return {result_checks:values['state:result_checks']??[],result_map_queue_count:(values['state:result_map_queue']??[]).length,coverage:'dynamic-top20',coverage_note:COVERAGE,tracked_teams:teamPool.length,team_pool:teamPool,baseline_rosters:BASELINE_ROSTERS,roster_policy:'informational-v1',history_maps:new Set([...seed.maps.map(m=>m.match_id),...matchRows.map(r=>(JSON.parse(r.payload) as NormalizedMatch).id)]).size,current_patch:currentPatch??null,uncertainty_pool:recent.length?(values['state:uncertainty_pool']??[]):[],betting_health:values['state:betting_health']??null,team_ratings:currentPatchFresh?buildTeamRatings(currentHistory,Date.now(),currentPatch.patch_id!):[],schedule:values['state:schedule']??null,last_run:recent[0]??null,recent_runs:recent,roster_alerts:values['state:roster_alerts']??{},pending_review:d.fixtures.filter(f=>Date.parse(f.scheduled_start_utc)<Date.now()&&!f.observation?.series_void&&(!f.observation?.series_score||!f.observation?.map1||f.observation.map1.kills_a==null||f.observation.map1.duration_seconds==null)).map(f=>({fixture_id:f.fixture_id,team_a:f.team_a,team_b:f.team_b,scheduled_start_utc:f.scheduled_start_utc,observation:f.observation})),unverified_maps:unknown.slice(-100),unverified_maps_total:unknown.length,evaluation:{summary:d.summary,daily:d.daily,calibration:d.calibration},source_access:{opendota_key_configured:!!env.OPENDOTA_API_KEY},source_budget:{opendota:openDotaBudget,price_assumption:'$0.01 per 100 requests',monthly_ceiling_usd:15},updater_instructions:{service_routes:SERVICE_ROUTES,forecast_window_hours:144,schedule_window_hours:192,bet_recalculation_max_history_age_minutes:10,source:'https://api.opendota.com/api',schedule_source:'https://dota.haglund.dev/v1/matches',fallback_schedule_source:'https://cyberscore.live/en/matches/',rule:'Use the fixed 12-team core plus up to 8 qualified challengers from the rolling TOP-20; roster differences are informational and do not block forecasts or paper bets. Review unverified maps and roster evidence; never infer missing results or identities.',teams:Object.fromEntries(teamPool.map(team=>[team.id,team.name]))}};
 }
 
 async function settleConfirmed(history:AnalysisHistory,confirmed:AnalysisSeries[]){
   let added=0;const issues:string[]=[];
   const loaded=await loadJournal(),latest=latestObservations(loaded.journal.observations);
   for(const f of new Map(loaded.journal.forecasts.filter(inCurrentExperiment).map(f=>[f.fixture_id,f])).values()){
-    const a=String(f.team_a_id??Object.keys(TEAM_NAMES).find(id=>TEAM_NAMES[id]===f.team_a)??''),b=String(f.team_b_id??Object.keys(TEAM_NAMES).find(id=>TEAM_NAMES[id]===f.team_b)??''),start=Date.parse(f.scheduled_start_utc)/1000;
+    const [a,b]=forecastTeamIds(f)??[],start=Date.parse(f.scheduled_start_utc)/1000;if(!a||!b)continue;
     const candidates=confirmed.filter(s=>s.team_id===a&&s.opponent_team_id===b&&s.start_time>=start-900&&s.start_time<=start+8*3600);
     if(candidates.length!==1)continue;
     const s=candidates[0],first=history.maps.find(m=>m.team_id===a&&m.match_id===s.map_ids[0]);if(!first)continue;
     const previous=latest.get(f.fixture_id),map1={match_id:first.match_id,kills_a:first.team_kills,kills_b:first.opponent_kills,duration_seconds:first.duration_seconds},score=[s.score_team,s.score_opponent];
-    const conflict=previous?.series_void||previous?.map1_void||(previous?.series_score&&canonical(previous.series_score)!==canonical(score))||(previous?.map1&&(['match_id','kills_a','kills_b','duration_seconds'] as const).some(k=>previous.map1?.[k]!=null&&String(previous.map1[k])!==String(map1[k])));
+    const conflict=previous?.series_void||previous?.map1_void||(previous?.series_winner&&previous.series_winner!==(score[0]>score[1]?'a':'b'))||(previous?.series_score&&canonical(previous.series_score)!==canonical(score))||(previous?.map1&&(['match_id','kills_a','kills_b','duration_seconds'] as const).some(k=>previous.map1?.[k]!=null&&String(previous.map1[k])!==String(map1[k])));
     if(conflict){issues.push(`${f.team_a} — ${f.team_b}: подтверждение расходится с журналом, требуется отдельное исправление.`);continue;}
     if(previous?.series_score&&previous.map1&&(['match_id','kills_a','kills_b','duration_seconds'] as const).every(k=>String(previous.map1?.[k])===String(map1[k])))continue;
     const r=await recordResult({fixture_id:f.fixture_id,series_score:score,map1,sources:s.sources.slice(0,20),...(previous?{supersedes:previous.observation_id}:{}),note:'Официальный счёт проверен по источнику; все карты серии сопоставлены с данными OpenDota.'},'automatic-verified');
@@ -113,6 +119,11 @@ export async function configureAnalysisSchedule(value:unknown){
   invariant(!!value&&typeof value==='object'&&!Array.isArray(value),'Нужны сведения о сохранённом расписании.');
   const s=value as Schedule;
   invariant(typeof s.enabled==='boolean','Укажите enabled.');
+  if(s.kind==='local'){
+    invariant(s.id==='local.dotalab.analysis'&&s.interval_hours===4&&s.timezone==='Asia/Yakutsk','Некорректные параметры локального расписания.');
+    await writeRecord('state:schedule',{enabled:s.enabled,id:s.id,kind:'local',interval_hours:4,timezone:s.timezone});
+    return {ok:true,schedule:(await analysisStatus()).schedule};
+  }
   invariant(!s.enabled||(typeof s.id==='string'&&s.id.length>0&&s.id.length<200&&s.time==='17:00'&&s.timezone==='Asia/Yakutsk'&&s.until==='2026-12-08'),'Нужно уже сохранённое расписание ежедневного эксперимента.');
   await writeRecord('state:schedule',{enabled:s.enabled,id:s.id??null,time:s.time??'17:00',timezone:s.timezone??'Asia/Yakutsk',until:s.until??'2026-12-08'});
   return {ok:true,schedule:(await analysisStatus()).schedule};
@@ -131,12 +142,13 @@ function refreshedTeams(history:AnalysisHistory,now:number,alerts:Record<string,
 }
 
 export async function runAnalysis(input:unknown={}){
+  const options=refreshOptions(input);
   invariant(!!input&&typeof input==='object'&&!Array.isArray(input),'Некорректные параметры запуска.');
   const args=input as {fixtures?:unknown[];research?:boolean;history_only?:boolean};
   invariant(!args.fixtures||Array.isArray(args.fixtures)&&args.fixtures.length<=30,'Допустимо до 30 подтверждённых серий за запуск.');
   const start=Date.now(),now=new Date(start).toISOString(),runId=crypto.randomUUID();
   const suppliedInput=args.fixtures??[];
-  const lease=await db().prepare("INSERT INTO dota_analysis_lease(id,owner,expires_at) VALUES('daily',?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE dota_analysis_lease.expires_at<? RETURNING owner").bind(runId,start+300000,start).first<{owner:string}>();
+  const lease=await db().prepare("INSERT INTO dota_analysis_lease(id,owner,expires_at) SELECT 'daily',?,? WHERE NOT EXISTS(SELECT 1 FROM dota_analysis_lease WHERE id='results' AND expires_at>?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE dota_analysis_lease.expires_at<? RETURNING owner").bind(runId,start+300000,start,start).first<{owner:string}>();
   if(lease?.owner!==runId)throw new DataError('Обновление уже выполняется. Повторите чтение статуса немного позже.',409);
   const run:Run={run_id:runId,status:'running',started_at:now,finished_at:null,maps_added:0,forecasts_added:0,observations_added:0,fixtures_seen:0,backlog_count:0,source_requests:0,opendota_requests:0,collection_healthy:false,rate_limited:false,history_maps:191,warnings:[],skipped:[]};
   await db().prepare('INSERT INTO dota_analysis_runs(id,started_utc,status,payload) VALUES(?,?,?,?)').bind(runId,now,'running',canonical(run)).run();
@@ -159,7 +171,8 @@ export async function runAnalysis(input:unknown={}){
     const expansionState=Object.fromEntries(expansionRows.map(r=>[r.key,JSON.parse(r.payload)]));
     const previousExpansion=expansionState['state:expansion'] as ExpansionSnapshot|undefined;
     const previousQueue=(expansionState['state:history_queue']??[]) as string[];
-    const collected=await collectOpenDota(known,start,fetch,undefined,env.OPENDOTA_API_KEY,expansionPool(previousExpansion,[],savedPool),budget.remaining,true,previousQueue);
+    const collected=await collectOpenDota(known,start,fetch,undefined,env.OPENDOTA_API_KEY,expansionPool(previousExpansion,[],savedPool),budget.remaining,true,previousQueue,expansionState['state:skipped_maps']??[],options.force_refresh);
+    await writeRecord('state:skipped_maps',collected.skipped_maps);
     run.opendota_requests=collected.requested;
     const poolIds=new Set(collected.team_pool.map(team=>team.id));
     const legacyById=new Map(TRACKED_SCHEDULE_TEAMS.map(team=>[team.id,team]));
@@ -183,7 +196,10 @@ export async function runAnalysis(input:unknown={}){
     for(const f of calendar.fixtures)pendingById.delete(f.provider_id);
     await writeRecord('state:schedule_pending',[...pendingById.values()].slice(0,1000));
     const aliases=Object.fromEntries(collected.team_directory.map(t=>[t.id,[...new Set([...(expansionState['state:team_aliases']?.[t.id]??[]),t.name,...(t.tag?[t.tag]:[])])].slice(-20)]));
-    if(collected.team_directory.length)await writeRecord('state:team_aliases',aliases);
+    if(collected.team_directory.length){
+      await writeRecord('state:team_aliases',aliases);
+      await writeRecord('state:team_directory',collected.team_directory);
+    }
     const supplied=suppliedInput.map(f=>checkedFixture(f,start,allowedTeams));
     await writeRecord('state:current_patch',patch);
     await writeRecord('state:team_pool',collected.team_pool);
@@ -198,17 +214,34 @@ export async function runAnalysis(input:unknown={}){
     });
     if(inserts.length)await db().batch(inserts);
     matches.splice(0,matches.length,...previousMatches.values());run.maps_added=collected.matches.filter(m=>!stored.some(r=>r.key==='match:'+m.id)).length;
+    if(args.history_only!==true){
+      try{
+        await db().prepare("UPDATE dota_analysis_lease SET expires_at=? WHERE id='daily' AND owner=?").bind(Date.now()+300000,runId).run();
+        const results=await updateMatchResults(run.opendota_requests);
+        run.maps_added+=results.maps_added;run.observations_added+=results.observations_added;
+        // Result requests have their own durable monthly ledger; do not double count.
+        if('source_requests' in results)run.source_requests+=results.source_requests+results.opendota_requests;
+        if('warnings' in results)run.warnings.push(...results.warnings);
+        for(const check of results.checks)if(check.status!=='confirmed')run.warnings.push(`${check.fixture}: ${check.reason}`);
+        matches.splice(0,matches.length,...(await records('match:')).map(r=>JSON.parse(r.payload) as NormalizedMatch));
+      }catch(e){
+        const failure=technicalFailure(e,'/api/analysis/results');
+        if(failure)await recordTechnicalError({...failure,code:'RESULTS_REFRESH_FAILED'});
+        run.warnings.push('Автопроверка итогов не завершена; сохранённые карты не потеряны, повтор в следующем цикле.');
+      }
+    }
     run.history_maps=new Set([...seed.maps.map(m=>m.match_id),...matches.map(m=>m.id)]).size;
     const alerts=rosterAlerts(matches,Object.fromEntries(Object.entries(BASELINE_ROSTERS).map(([id,r])=>[id,{account_ids:r.account_ids,observed_start_time:Date.parse(r.observed_at)/1000}])));
     await writeRecord('state:roster_alerts',alerts);
 
     const rankingNow=Date.now();
     const rawHistory=historyFromMatches(seed,matches,(await loadJournal()).journal,rankingNow);
-    const expansion=expandTeamPool(rawHistory,collected.team_directory,previousExpansion,rankingNow,patch.patch_id,collected.healthy&&run.backlog_count===0&&!!patch.patch_id,[...previousQueue,...collected.discovered_team_ids,...(calendar.recognized_team_ids??[])]);
+    const rankingUpdate=await advanceTeamPool(rawHistory,collected.team_directory,previousExpansion,rankingNow,patch.patch_id,collected.healthy&&run.backlog_count===0&&!!patch.patch_id,[...previousQueue,...collected.discovered_team_ids,...(calendar.recognized_team_ids??[])],[...poolIds,...collected.history_attempted_ids]);
+    const expansion=rankingUpdate.snapshot;
     const activePool=expansionPool(expansion,collected.team_directory,savedPool);
     await writeRecord('state:expansion',expansion);
     await writeRecord('state:team_pool',activePool);
-    await db().prepare('INSERT OR IGNORE INTO dota_analysis_records(key,payload,updated_utc) VALUES(?,?,?)').bind('ranking:'+runId,canonical(expansion),now).run();
+    if(rankingUpdate.changed)await db().prepare('INSERT OR IGNORE INTO dota_analysis_records(key,payload,updated_utc) VALUES(?,?,?)').bind('ranking:'+runId,canonical(expansion),now).run();
     const discovered=[...(calendar.recognized_team_ids??[]),...collected.discovered_team_ids,...expansion.rows.map(r=>r.team_id),...calendar.fixtures.flatMap(f=>[f.team_a_id,f.team_b_id]),...supplied.flatMap(f=>[f.team_a_id,f.team_b_id])];
     const activeIds=new Set(expansion.active_ids),catalogIds=new Set(collected.team_directory.map(t=>t.id));
     const nextQueue=[...new Set([...previousQueue.filter(id=>!collected.history_attempted_ids.includes(id)),...discovered,...collected.history_attempted_ids])].filter(id=>!activeIds.has(id)&&catalogIds.has(id)).slice(0,500);
@@ -268,7 +301,7 @@ export async function runAnalysis(input:unknown={}){
       if(!collected.healthy||run.backlog_count){run.skipped.push({fixture_id:fixtureKey(f),fixture:label,reason:'Свежая история загружена не полностью; прогноз отложен до успешного обновления.'});continue;}
       const built=buildForecasts(history,f,Date.now());
       if(built.skip_reason)run.skipped.push({fixture_id:fixtureKey(f),fixture:label,reason:built.skip_reason});
-      else newForecasts.push(...built.forecasts.map(f=>({...f,pool_snapshot_at:expansion.at,pool_policy:expansion.version})));
+      else newForecasts.push(...built.forecasts.map(f=>({...f,pool_snapshot_at:expansion.at,pool_policy:expansion.version,pool_warnings:poolWarnings(expansion,[String(f.team_a_id),String(f.team_b_id)])})));
     }
     // Reload immediately before the append to preserve observations entered in
     // the browser during network collection. D1 constraints guard concurrent edits.
@@ -283,16 +316,18 @@ export async function runAnalysis(input:unknown={}){
     run.status=run.warnings.length||run.skipped.length||run.backlog_count?'partial':'ok';
   }catch(e){
     run.status='failed';
-    run.warnings.push(e instanceof DataError?e.message:'Сбор не завершён. Уже подтверждённые данные сохранены; повторный запуск безопасен.');
-    console.error('Automatic Dota analysis failed',e instanceof Error?e.message:'Unknown error');
+    const failure=technicalFailure(e,'/api/analysis/run');
+    if(failure)await recordTechnicalError({...failure,code:'ANALYSIS_RUN_FAILED'});
+    run.warnings.push(e instanceof DataError?redactServerTechnicalText(e.message,1000):'Сбор не завершён. Уже подтверждённые данные сохранены; повторный запуск безопасен.');
+    console.error('Automatic Dota analysis failed',redactServerTechnicalText(e instanceof Error?e.message:'Unknown error',1000));
   }finally{
     run.finished_at=new Date().toISOString();
     await db().prepare('UPDATE dota_analysis_runs SET finished_utc=?,status=?,payload=? WHERE id=?').bind(run.finished_at,run.status,canonical(run),runId).run();
     await db().prepare("DELETE FROM dota_analysis_lease WHERE id='daily' AND owner=?").bind(runId).run();
   }
   if(args.history_only===true)return {...run,history_only:true};
-  const paper=await runPaperAuto();
-  const openai=args.research===true?await runOpenaiSearch().catch(()=>({reason:'Поиск источников не завершён; результаты анализа сохранены.'})):null;
+  const paper=await runPaperAuto(options);
+  const openai=args.research===true?await runOpenaiSearch(options).catch(()=>({reason:'Поиск источников не завершён; результаты анализа сохранены.'})):null;
   return {...run,paper,openai};
 }
 

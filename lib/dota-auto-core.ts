@@ -2,9 +2,15 @@ import type { AnalysisHistory, AnalysisMap, AnalysisSeries, FixtureInput, Roster
 import type { NormalizedMatch } from './dota-opendota';
 import type { Forecast, Journal, Observation } from './dota-types';
 import { invariant, latestObservations, validSource } from './dota-core';
+import { primaryTeamPool } from './dota-team-pool';
 
 export const TEAM_NAMES: Record<string,string> = {'55':'Power Rangers','10020555':'PlayTime','10242397':'Xipto Esports','10252232':'Zenith','5014799':'Nemiga Gaming','10212329':'Team Synapse','10331884':'Froglings','10271553':'potn9ki'};
 const teamId = (name: string) => Object.entries(TEAM_NAMES).find(([,n])=>n===name)?.[0];
+export function forecastTeamIds(f: {team_a:string;team_b:string;team_a_id?:unknown;team_b_id?:unknown}): [string,string] | null {
+  const fallback=(name:string)=>teamId(name)??primaryTeamPool().find(t=>t.name===name)?.id;
+  const a=String(f.team_a_id??fallback(f.team_a)??''),b=String(f.team_b_id??fallback(f.team_b)??'');
+  return /^[1-9]\d*$/.test(a)&&/^[1-9]\d*$/.test(b)&&a!==b?[a,b]:null;
+}
 const allowedSources = new Set(['cyberscore.live','www.cyberscore.live','liquipedia.net','dota.haglund.dev']);
 const excludedRemakes = new Set(['9074604699','9044544461','9074615771']);
 const validScores = new Set(['2:0','2:1','1:2','0:2']);
@@ -45,7 +51,7 @@ export function mergeMatchEvidence(old:NormalizedMatch,incoming:NormalizedMatch)
 }
 
 /** Repeated discovery is harmless; conflicting copies are not usable evidence. */
-function distinctMatches(matches:NormalizedMatch[],now=Date.now()): NormalizedMatch[] {
+export function distinctMatches(matches:NormalizedMatch[],now=Date.now()): NormalizedMatch[] {
   const unique=new Map<string,NormalizedMatch>(),conflicts=new Set<string>();
   for(const m of matches) {
     if(excludedRemakes.has(m.id)||m.id!==m.match_id||!/^\d+$/.test(m.id)||m.radiant_team_id===m.dire_team_id)continue;
@@ -134,7 +140,7 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
   for(const [fixtureId,o] of latestObservations(journal.observations)) {
     const f=journal.forecasts.find(f=>f.fixture_id===fixtureId);
     if(!f||!o.series_score||!validScores.has(o.series_score.join(':'))||o.series_void||o.map1_void||!o.map1?.match_id||!Number.isFinite(Date.parse(o.recorded_utc))||Date.parse(o.recorded_utc)>now)continue;
-    const a=String(f.team_a_id??teamId(f.team_a)??''),b=String(f.team_b_id??teamId(f.team_b)??'');if(!/^[1-9]\d*$/.test(a)||!/^[1-9]\d*$/.test(b))continue;
+    const [a,b]=forecastTeamIds(f)??[];if(!a||!b)continue;
     const first=rows.get(`${a}:${o.map1.match_id}`);if(!first?.series_key||first.series_type!==1||excludedSeries.has(first.series_key))continue;
     const fixtureStart=Date.parse(f.scheduled_start_utc)/1000;
     if(first.start_time<fixtureStart-900||first.start_time>fixtureStart+8*3600)continue;
@@ -159,7 +165,7 @@ export function historyFromMatches(seed:AnalysisHistory,matches:NormalizedMatch[
 // Three validated maps with an unbroken 2:1 finish establish map order. Two
 // observed wins alone never establish a 2:0: a missing loss remains possible.
 export function firstMapEvidence(f:Forecast,matches:NormalizedMatch[],now=Date.now()): Observation['map1']|null {
-  const a=teamId(f.team_a),b=teamId(f.team_b),start=Date.parse(f.scheduled_start_utc)/1000;
+  const [a,b]=forecastTeamIds(f)??[],start=Date.parse(f.scheduled_start_utc)/1000;
   if(!a||!b||!Number.isFinite(start)||start*1000>now)return null;
   const groups=new Map<string,NormalizedMatch[]>();
   for(const m of distinctMatches(matches,now)) {
@@ -169,7 +175,7 @@ export function firstMapEvidence(f:Forecast,matches:NormalizedMatch[],now=Date.n
   }
   if(groups.size!==1)return null;
   const maps=[...groups.values()][0].sort((x,y)=>x.start_time-y.start_time);
-  if(maps.length!==3||maps.some((m,i)=>i>0&&m.start_time<maps[i-1].end_time))return null;
+  if(maps.length!==3||maps.some((m,i)=>m.context_conflict||i>0&&m.start_time<maps[i-1].end_time))return null;
   const wins=maps.map(m=>m.radiant_team_id===a?m.radiant_win:!m.radiant_win);
   if(wins[0]===wins[1]||![1,2].includes(wins.filter(Boolean).length))return null;
   const m=maps[0],aRadiant=m.radiant_team_id===a;
@@ -219,7 +225,7 @@ export function confirmSeries(history:AnalysisHistory,value:unknown,now=Date.now
   invariant(Array.isArray(input.map_ids)&&input.map_ids.length===input.score[0]+input.score[1]&&new Set(input.map_ids).size===input.map_ids.length&&input.map_ids.every(id=>typeof id==='string'&&/^[1-9]\d*$/.test(id)),'Укажите все уникальные ID карт в официальном порядке.');
   const verified=Date.parse(input.verified_at);
   invariant(Number.isFinite(now)&&Number.isFinite(verified)&&verified<=now&&verified>=now-6*3600000,'Официальный результат должен быть проверен за последние шесть часов.');
-  invariant(validSource(input.source_url)&&new URL(input.source_url).protocol==='https:'&&['cyberscore.live','www.cyberscore.live','liquipedia.net'].includes(new URL(input.source_url).hostname),'Нужна HTTPS-ссылка на официальный результат в CyberScore или Liquipedia.');
+  invariant(validSource(input.source_url)&&new URL(input.source_url).protocol==='https:'&&['cyberscore.live','www.cyberscore.live','liquipedia.net','hawk.live'].includes(new URL(input.source_url).hostname),'Нужна HTTPS-ссылка на подтверждённый результат в CyberScore, Liquipedia или Hawk Live.');
   const pair=new Set([input.team_a_id,input.team_b_id]);
   const allRows:AnalysisMap[]=[];
   const maps=input.map_ids.map(id=>{

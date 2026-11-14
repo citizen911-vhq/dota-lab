@@ -1,10 +1,14 @@
 import { DataError } from './dota-core';
+import { technicalFailure } from './dota-technical-core';
+import { recordTechnicalError, redactServerTechnicalText } from './dota-technical-log';
 export function json(value: unknown, status = 200) {
   return Response.json(value,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 }
-export function fail(e: unknown) {
-  if (e instanceof DataError) return json({error:e.message},e.status);
-  console.error('Dota journal request failed',e instanceof Error ? e.message : 'Unknown error');
+export async function fail(e: unknown, route?: string) {
+  const technical = technicalFailure(e, route);
+  if (technical) await recordTechnicalError(technical);
+  if (e instanceof DataError) return json({error:technical ? redactServerTechnicalText(e.message,1000) : e.message},e.status);
+  console.error('Dota journal request failed',redactServerTechnicalText(e instanceof Error ? e.message : 'Unknown error',1000));
   return json({error:'Не удалось прочитать или сохранить журнал. Повторите попытку.'},500);
 }
 export async function body(request: Request): Promise<unknown> {

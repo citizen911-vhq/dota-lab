@@ -62,11 +62,17 @@ export function validateObservation(value: unknown, fixtures: Map<string, Foreca
   if (value.note != null) invariant(typeof value.note === 'string' && value.note.length <= 3000, 'Слишком длинное примечание.');
   if (value.series_void != null) invariant(typeof value.series_void === 'boolean', 'Некорректная отмена серии.');
   if (value.map1_void != null) invariant(typeof value.map1_void === 'boolean', 'Некорректная отмена карты.');
+  if (value.series_winner != null) {
+    invariant((fixture.best_of??3)===3 && ['a','b'].includes(String(value.series_winner)), 'Отдельное подтверждение победителя поддерживается для BO3.');
+    invariant(!value.series_void, 'Нельзя одновременно указать победителя и отмену серии.');
+  }
+  if (value.winner_map_ids != null) invariant(Array.isArray(value.winner_map_ids)&&value.winner_map_ids.length>=2&&value.winner_map_ids.length<=3&&new Set(value.winner_map_ids).size===value.winner_map_ids.length&&value.winner_map_ids.every(id=>typeof id==='string'&&/^[1-9]\d*$/.test(id)), 'Некорректные карты подтверждения победителя.');
   if (value.series_score != null) {
     const bestOf=fixture.best_of??3;
     const scores=bestOf===2?['[2,0]','[1,1]','[0,2]']:['[2,0]','[2,1]','[1,2]','[0,2]'];
     invariant(Array.isArray(value.series_score) && scores.includes(JSON.stringify(value.series_score)), `Некорректный счёт завершённой BO${bestOf}.`);
     invariant(!value.series_void, 'Нельзя одновременно указать счёт и отмену серии.');
+    if(value.series_winner!=null)invariant(value.series_winner===(value.series_score[0]>value.series_score[1]?'a':'b'), 'Победитель противоречит итоговому счёту.');
   }
   if (value.map1 != null) {
     invariant(isObject(value.map1), 'Некорректная первая карта.');
@@ -77,7 +83,7 @@ export function validateObservation(value: unknown, fixtures: Map<string, Foreca
     if (m.duration_seconds != null) invariant(integer(m.duration_seconds, 86400) && Number(m.duration_seconds) > 0, 'Длительность должна быть от 1 до 86400 секунд.');
     invariant(m.kills_a != null || m.duration_seconds != null, 'Укажите счёт убийств или длительность карты.');
   }
-  invariant(value.series_score != null || value.map1 != null || value.series_void || value.map1_void, 'Укажите хотя бы один фактический результат.');
+  invariant(value.series_score != null || value.series_winner != null || value.map1 != null || value.series_void || value.map1_void, 'Укажите хотя бы один фактический результат.');
   return value as unknown as Observation;
 }
 
@@ -93,9 +99,16 @@ export function latestObservations(observations: Observation[]): Map<string, Obs
     // Missing fields preserve earlier facts; explicit null/void clears them.
     const merged = {...previous, ...o} as Observation;
     if (o.map1 && previous?.map1) merged.map1 = {...previous.map1, ...o.map1};
-    if (o.series_score) merged.series_void = false;
+    if (o.series_score) {
+      merged.series_void = false;
+      merged.series_winner = o.series_score[0]===o.series_score[1]?null:o.series_score[0]>o.series_score[1]?'a':'b';
+    } else if(o.series_winner) {
+      invariant(!merged.series_score||o.series_winner===(merged.series_score[0]>merged.series_score[1]?'a':'b')&&merged.series_score[0]!==merged.series_score[1], 'Победитель противоречит сохранённому счёту.');
+      merged.series_void=false;
+    }
+    if(o.series_score===null&&o.series_winner===undefined)merged.series_winner=null;
     if (o.map1) merged.map1_void = false;
-    if (o.series_void) merged.series_score = null;
+    if (o.series_void) {merged.series_score = null;merged.series_winner=null;}
     if (o.map1_void) merged.map1 = null;
     latest.set(o.fixture_id, merged);
   }
@@ -107,10 +120,16 @@ export function settle(f: Forecast, o?: Observation): {outcome: number | null; s
   let won: boolean;
   if (f.market === 'map_handicap' || f.market === 'series_winner') {
     if (o.series_void) return {outcome: null, status: 'void'};
+    if(f.market==='series_winner'&&!o.series_score&&(f.best_of??3)===3&&o.series_winner){
+      won=f.selection===o.series_winner;
+      return {outcome:Number(won),status:won?'won':'lost'};
+    }
     if (!o.series_score) return {outcome: null, status: 'pending'};
     let [a, b] = o.series_score; if (f.selection === 'b') [a, b] = [b, a];
     won = f.market === 'series_winner' ? a > b : a + Number(f.threshold) > b;
   } else {
+    // Only map 1 is represented by this observation; never settle map 2/3 from it.
+    if(f.map_number!=null&&f.map_number!==1)return {outcome:null,status:'pending'};
     if (o.map1_void) return {outcome: null, status: 'void'};
     if (!o.map1) return {outcome: null, status: 'pending'};
     if (f.market === 'map_duration') {

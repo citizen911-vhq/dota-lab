@@ -38,6 +38,8 @@ export interface PaperBet {
 }
 
 export interface PaperBetView extends PaperBet {
+  series_score?: [number,number] | null;
+  series_winner?: 'a'|'b'|null;
   forecast: Forecast;
   quote: OddsQuote;
   status: Status;

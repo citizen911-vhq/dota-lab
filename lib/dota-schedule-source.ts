@@ -9,6 +9,8 @@
  * Do not scrape DotaScore.org RSC/HTML: no documented public API was confirmed.
  */
 
+import { verifiedTeamIdByName, verifiedTeamIdByUrl } from './dota-team-identity';
+
 export interface TrackedScheduleTeam {
   id: string;
   name: string;
@@ -68,15 +70,22 @@ function object(value: unknown): value is JsonObject {
 
 function resolveTeam(value: unknown, catalog: readonly ScheduleTeamIdentity[]): ScheduleTeamIdentity | undefined {
   if (!object(value)) return;
-  const byUrl = catalog.find(team => team.liquipedia_url != null && team.liquipedia_url === value.url);
+  const reviewedNameId = verifiedTeamIdByName(value.name);
+  const reviewedUrlId = verifiedTeamIdByUrl(value.url);
+  const reviewedTagId = verifiedTeamIdByName(value.tag);
+  // Reviewed aliases only resolve an identity present in the current directory.
+  if ([reviewedNameId, reviewedUrlId, reviewedTagId].some(id => id != null && !catalog.some(t => t.id === id))) return;
+  const urlMatches = catalog.filter(team => team.liquipedia_url != null && team.liquipedia_url === value.url || team.id === reviewedUrlId);
+  if (urlMatches.length > 1) return;
+  const byUrl = urlMatches[0];
   const observed = typeof value.name === 'string' ? value.name.trim() : '';
-  const nameMatches = observed ? catalog.filter(team => team.aliases ? [team.name,...team.aliases].includes(observed) : team.name.toLocaleLowerCase('en-US') === observed.toLocaleLowerCase('en-US')) : [];
+  const nameMatches = observed ? catalog.filter(team => team.id === reviewedNameId || (team.aliases ? [team.name,...team.aliases].includes(observed) : team.name.toLocaleLowerCase('en-US') === observed.toLocaleLowerCase('en-US'))) : [];
   const byName = nameMatches.length === 1 ? nameMatches[0] : undefined;
   const rawId=value.valve_team_id??value.team_id;
   const byId=rawId==null?undefined:catalog.find(t=>t.id===String(rawId));
   if(rawId!=null&&!byId)return;
   const tag=typeof value.tag==='string'?value.tag.trim():observed;
-  const tagMatches=tag?catalog.filter(t=>t.tag===tag):[];
+  const tagMatches=tag?catalog.filter(t=>t.tag===tag || t.id===reviewedTagId):[];
   const byTag=tagMatches.length===1?tagMatches[0]:undefined;
   if(nameMatches.length>1||tagMatches.length>1)return;
   const resolved=[byId,byUrl,byName,byTag].filter((t):t is ScheduleTeamIdentity=>!!t);

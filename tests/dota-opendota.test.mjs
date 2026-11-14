@@ -73,6 +73,19 @@ test('deduplicates discovery, reads final scores and seconds, and keeps public r
   assert.ok(!('map_number' in match)); // index order cannot prove first-map order
 });
 
+test('queued opponent history includes non-top opponents and maps older than a month without promoting it',async()=>{
+ const raw=map({radiant_team_id:10331884,dire_team_id:999999,start_time:seconds-40*86400});
+ const {fetchFn,calls}=mock({'teams/10331884/matches':[teamRow(raw)],[`matches/${raw.match_id}`]:raw});
+ const result=await collectOpenDota([],now,fetchFn,undefined,undefined,[],100,true,['10331884']);
+ assert.equal(result.healthy,true);
+ assert.equal(result.matches.length,1);
+ assert.equal(result.matches[0].radiant_team_id,'10331884');
+ assert.equal(result.matches[0].dire_team_id,'999999');
+ assert.equal(result.team_pool.some(t=>t.id==='10331884'),false);
+ assert.deepEqual(result.history_attempted_ids,['10331884']);
+ assert.ok(calls.some(c=>c.url.endsWith('/teams/10331884/matches')));
+});
+
 test('only explicit numeric patch IDs enter normalized history; missing or malformed patch stays unknown', async () => {
   for (const patch of [undefined,null,'60',-1,60.5]) {
     const raw=map({patch});
@@ -105,19 +118,19 @@ test('known maps and curated remakes are not fetched, ancient index rows do not 
   assert.match(result.warnings[0], /пропуски/);
 });
 
-test('enforces 23-request limit and preserves unprocessed candidate IDs', async () => {
-  const maps = Array.from({ length: 20 }, (_, index) => map({ match_id: 9080200000 + index }));
+test('loads at most 40 details plus indexes and preserves unprocessed candidate IDs', async () => {
+  const maps = Array.from({ length: 48 }, (_, index) => map({ match_id: 9080200000 + index }));
   const routes = { 'teams/55/matches': maps.map(teamRow) };
   for (const raw of maps) routes[`matches/${raw.match_id}`] = raw;
   const { fetchFn, calls } = mock(routes);
   const result = await collectOpenDota([], now, fetchFn);
-  assert.equal(result.requested, 23);
-  assert.equal(calls.length, 23);
-  assert.equal(result.matches.length, 12);
-  assert.equal(result.discovered, 20);
+  assert.equal(result.requested, 51);
+  assert.equal(calls.length, 51);
+  assert.equal(result.matches.length, 40);
+  assert.equal(result.discovered, 48);
   assert.equal(result.unfetched_ids.length, 8);
   assert.equal(result.healthy, true); // the caller must separately gate on the remaining backlog
-  assert.equal(result.matches[0].id, '9080200019');
+  assert.equal(result.matches[0].id, '9080200047');
 });
 
 test('honors an explicit OpenDota billing budget before making another request', async () => {
@@ -162,15 +175,42 @@ test('rate limit on detail retains the entire queue; unavailable index does not 
   assert.match(result.warnings.join(' '), /503/);
 });
 
-test('rejects null scores, mismatched detail identity, and not-yet-completed games', async () => {
+test('quarantines invalid data but keeps unfinished games pending', async () => {
   for (const change of [{ radiant_score: null }, { match_id: 999 }, { duration: 7200 }, { radiant_team_id: null }]) {
     const raw = map();
     const { fetchFn } = mock({ 'teams/55/matches': [teamRow(raw)], [`matches/${raw.match_id}`]: map(change) });
     const result = await collectOpenDota([], now, fetchFn);
     assert.equal(result.matches.length, 0);
-    assert.equal(result.healthy, false);
-    assert.deepEqual(result.unfetched_ids, [String(raw.match_id)]);
+    const unfinished = change.duration === 7200;
+    assert.equal(result.healthy, !unfinished);
+    assert.deepEqual(result.unfetched_ids, unfinished ? [String(raw.match_id)] : []);
+    assert.equal(result.skipped_maps.length, unfinished ? 0 : 1);
   }
+});
+
+test('invalid map cannot block valid maps and is retried only after quarantine expires', async () => {
+  const bad = map(), good = map({match_id:9080200099});
+  const routes = {'teams/55/matches':[teamRow(bad),teamRow(good)], [`matches/${bad.match_id}`]:map({radiant_team_id:null}), [`matches/${good.match_id}`]:good};
+  const first=await collectOpenDota([],now,mock(routes).fetchFn);
+  assert.equal(first.healthy,true);
+  assert.deepEqual(first.matches.map(m=>m.id),[String(good.match_id)]);
+  assert.deepEqual(first.unfetched_ids,[]);
+  assert.match(first.skipped_maps[0].reason,/radiant_team_id/);
+  const next=mock(routes);
+  const second=await collectOpenDota([String(good.match_id)],now+1000,next.fetchFn,undefined,undefined,[],100,false,[],first.skipped_maps);
+  assert.equal(second.healthy,true);
+  assert.equal(next.calls.some(c=>c.url.endsWith('/matches/'+bad.match_id)),false);
+  assert.equal(second.skipped_maps.length,1);
+  const repaired=mock({...routes,[`matches/${bad.match_id}`]:bad});
+  const third=await collectOpenDota([String(good.match_id)],now+86400001,repaired.fetchFn,undefined,undefined,[],100,false,[],second.skipped_maps);
+  assert.equal(third.matches.length,1);
+  assert.equal(third.skipped_maps.length,0);
+  const manual=await collectOpenDota([String(good.match_id)],now+2000,repaired.fetchFn,undefined,undefined,[],100,false,[],second.skipped_maps,true);
+  assert.equal(manual.matches.length,1,'manual refresh retries before the 24-hour delay');
+  assert.equal(manual.skipped_maps.length,0);
+  const stillBad=await collectOpenDota([String(good.match_id)],now+2000,mock(routes).fetchFn,undefined,undefined,[],100,false,[],second.skipped_maps,true);
+  assert.equal(stillBad.skipped_maps.length,1,'manual refresh never accepts malformed data');
+  assert.equal(stillBad.healthy,true);
 });
 
 test('merges missing series metadata only from matching league, teams and match IDs', async () => {

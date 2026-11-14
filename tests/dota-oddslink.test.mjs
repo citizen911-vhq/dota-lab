@@ -1,18 +1,66 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {oddsLinkEvents,oddsLinkQuote,fetchOddsLink,oddsLinkCoverage,ODDSLINK_URL} from '../lib/dota-oddslink.ts';
+import {registerHooks} from 'node:module';
+registerHooks({resolve(s,c,n){try{return n(s,c);}catch(e){if(e.code==='ERR_MODULE_NOT_FOUND'&&s.startsWith('.')&&!/\.[a-z]+$/.test(s))return n(s+'.ts',c);throw e;}}});
+const {oddsLinkEvents,oddsLinkQuote,fetchOddsLink,oddsLinkCoverage,ODDSLINK_URL} = await import('../lib/dota-oddslink.ts');
+const {VERIFIED_TEAM_IDENTITIES} = await import('../lib/dota-team-identity.ts');
 const sample=JSON.parse(readFileSync(new URL('./fixtures/oddslink-observed.json',import.meta.url),'utf8'));
 const now=Date.parse(sample.captured_at),e=sample.event;
 const f={team_a:'Team Synapse',team_b:'Froglings',scheduled_start_utc:e.commence_time,market:'map_handicap',selection:'a',threshold:1.5};
 const proof={...f,best_of:3,status:'scheduled',verified_at:sample.captured_at,source_url:'https://cyberscore.live/en/matches/'};
 const line=(overrides={})=>({...e,bookmakers:[{key:'1xbet',markets:[{key:'kills_total',period:'map1',last_update:sample.captured_at,outcomes:[{name:'Over',point:49.5,price:1.81}],...overrides}]}]});
+test('1win aliases match schedule, bookmaker event and outcome, including reversed sides',()=>{
+ const forecast={...f,team_a:'1win',team_a_id:'10182357',market:'series_winner',selection:'a',threshold:null};
+ const p={...proof,team_a:'Iron Wing'};
+ for(const alias of VERIFIED_TEAM_IDENTITIES[0].aliases){
+   const event={...e,home_team:'Froglings',away_team:alias.toUpperCase(),bookmakers:[{key:'thunderpick',markets:[{key:'h2h',period:'full',last_update:sample.captured_at,outcomes:[{name:alias,price:1.8},{name:'Froglings',price:2.1}]}]}]};
+   assert.equal(oddsLinkEvents([event],forecast,[p],now).length,1,alias);
+   assert.equal(oddsLinkQuote(event,forecast,now).decimal_odds,1.8);
+   assert.equal(oddsLinkQuote(event,{...forecast,selection:'b'},now).decimal_odds,2.1);
+   assert.equal(oddsLinkQuote(event,{...forecast,team_a_id:'999'},now),null);
+   const wrong=structuredClone(event);wrong.bookmakers[0].markets[0].outcomes[0].name='1win Academy';
+   assert.equal(oddsLinkQuote(wrong,forecast,now),null);
+   for(const name of ['1win Academy','1w Junior','Tundra Esports'])assert.equal(oddsLinkEvents([{...event,away_team:name}],forecast,[p],now).length,0);
+   const duplicate=structuredClone(event);duplicate.bookmakers[0].markets[0].outcomes.push({name:'1w',price:1.9});
+   assert.equal(oddsLinkQuote(duplicate,forecast,now),null);
+ }
+});
 test('observed response matches only with independent BO3 proof',()=>{
  assert.equal(oddsLinkEvents([e],f,[proof],now).length,1);
  assert.equal(oddsLinkEvents([e],f,[],now).length,0);
  for(const p of [{best_of:2},{verified_at:new Date(now-21600001).toISOString()},{source_url:'https://example.com'},{team_a:'Synapse Academy'}])assert.equal(oddsLinkEvents([e],f,[{...proof,...p}],now).length,0);
  for(const p of [{best_of:5},{is_live:true},{status:'ended'},{sport_key:'cs2'},{commence_time:new Date(now-1).toISOString()},{home_team:'Team Synapse Academy'}])assert.equal(oddsLinkEvents([{...e,...p}],f,[proof],now).length,0);
- assert.equal(oddsLinkEvents([e,e],f,[proof],now).length,2,'caller rejects ambiguous events');
+ assert.equal(oddsLinkEvents([e,e],f,[proof],now).length,1,'identical copies are one event');
+});
+test('verified alias duplicates merge without losing quote provenance or depending on row order',()=>{
+ const forecast={...f,team_a:'1win',team_a_id:'10182357',market:'series_winner',selection:'a',threshold:null};
+ const p={...proof,team_a:'1win'};
+ const make=(id,name,book,price,time=sample.captured_at)=>({...e,id,home_team:'Froglings',away_team:name,bookmakers:[{key:book,markets:[{key:'h2h',period:'full',last_update:time,outcomes:[{name,price}]}]}]});
+ const first=make('alias-1','1w Team','thunderpick',2.1);
+ const second=make('alias-2','1WIN','pinnacle',2.2);
+ for(const rows of [[first,second],[second,first]]){
+   const events=oddsLinkEvents(rows,forecast,[p],now);assert.equal(events.length,1);
+   const q=oddsLinkQuote(events[0],forecast,now);assert.equal(q.decimal_odds,2.2);assert.match(q.source_market_label,/event alias-2;/);
+ }
+ const older=make('older','1WIN','thunderpick',9,new Date(now-60000).toISOString());
+ assert.equal(oddsLinkQuote(oddsLinkEvents([older,first],forecast,[p],now)[0],forecast,now).decimal_odds,2.1);
+ const conflict=make('conflict','1WIN','thunderpick',3);
+ assert.equal(oddsLinkQuote(oddsLinkEvents([first,conflict],forecast,[p],now)[0],forecast,now),null);
+ assert.equal(oddsLinkQuote(oddsLinkEvents([first,conflict,second],forecast,[p],now)[0],forecast,now).bookmaker,'OddsLink / pinnacle');
+ assert.equal(oddsLinkQuote(oddsLinkEvents([first,{...first,id:'copy'}],forecast,[p],now)[0],forecast,now).decimal_odds,2.1);
+});
+test('duplicate identity requires consistent tournament, exact start and nonconflicting format/status',()=>{
+ for(const change of [{tournament:{key:'another',title:'Another league'}},{tournament:undefined},{commence_time:new Date(Date.parse(e.commence_time)+30000).toISOString()}]){
+   assert.equal(oddsLinkEvents([e,{...e,id:'other',...change}],f,[proof],now).length,2);
+ }
+ for(const change of [{best_of:2},{status:'live',is_live:true}]){
+   assert.equal(oddsLinkEvents([e,{...e,id:'other',...change}],f,[proof],now).length,0);
+ }
+ assert.equal(oddsLinkEvents([e,{...e,id:'other',home_team:'Team Synapse Academy'}],f,[proof],now).length,1);
+ assert.equal(oddsLinkEvents([e,e],f,[],now).length,0);
+ const merged=oddsLinkEvents([e,e],f,[proof],now)[0];
+ assert.equal(oddsLinkQuote(merged,f,now+1800000),null,'merge never refreshes stale prices');
 });
 test('actual signed handicap selects named team even when home/away reverse',()=>{
  const q=oddsLinkQuote(e,f,now); assert.equal(q.decimal_odds,1.47);assert.match(q.source_market_label,/updated 2026/);

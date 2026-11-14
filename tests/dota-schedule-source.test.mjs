@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fetchHaglundSchedule, parseHaglundSchedule, TRACKED_SCHEDULE_TEAMS, HAGLUND_SCHEDULE_URL, SCHEDULE_TIMEOUT_MS} from '../lib/dota-schedule-source.ts';
+import {registerHooks} from 'node:module';
+registerHooks({resolve(s,c,n){try{return n(s,c);}catch(e){if(e.code==='ERR_MODULE_NOT_FOUND'&&s.startsWith('.')&&!/\.[a-z]+$/.test(s))return n(s+'.ts',c);throw e;}}});
+const {fetchHaglundSchedule, parseHaglundSchedule, TRACKED_SCHEDULE_TEAMS, HAGLUND_SCHEDULE_URL, SCHEDULE_TIMEOUT_MS} = await import('../lib/dota-schedule-source.ts');
+const {VERIFIED_TEAM_IDENTITIES} = await import('../lib/dota-team-identity.ts');
 
 const now = Date.parse('2026-11-08T09:00:00Z');
 const fixture = (overrides = {}) => ({
@@ -26,6 +29,30 @@ test('Valve IDs, tags and saved aliases resolve consistently; collisions fail cl
  assert.equal(parseHaglundSchedule([fixture({teams:[{tag:'AA'},{name:'Beta'}]})],now,[catalog[0],{...catalog[1],tag:'AA'}]).fixtures.length,0);
 });
 const jsonResponse = (body, options = {}) => new Response(JSON.stringify(body), {headers: {'content-type': 'application/json'}, ...options});
+
+test('1win reviewed aliases, URLs and tags resolve to one Valve ID without weakening identity guards',()=>{
+ const identity=VERIFIED_TEAM_IDENTITIES[0];
+ const catalog=[{id:identity.id,name:'1win',tag:'1win',aliases:[],eligible:true},{id:'10331884',name:'Froglings',aliases:[],eligible:false}];
+ const resolve=(team,entries=catalog)=>parseHaglundSchedule([fixture({teams:[team,{name:'Froglings'}]})],now,entries);
+ for(const alias of identity.aliases){
+   const r=resolve({name:'  '+alias.toUpperCase().replace(/ /g,'  ')+'  '});
+   assert.equal(r.fixtures.length,1,alias);
+   assert.equal(r.fixtures[0].team_a_id,identity.id);
+ }
+ for(const path of identity.liquipedia_paths)assert.equal(resolve({url:'https://liquipedia.net/dota2/'+path}).fixtures.length,1);
+ assert.equal(resolve({tag:'1W'}).fixtures.length,1);
+ for(const name of ['1win Academy','1w Junior','Team 1win','1winner','Tundra Esports'])assert.equal(resolve({name}).fixtures.length,0,name);
+ assert.equal(resolve({name:'1w Team',team_id:'10331884'}).fixtures.length,0);
+ assert.equal(resolve({name:'1w',team_id:'999'}).fixtures.length,0);
+ assert.equal(resolve({name:'1w',url:'https://liquipedia.net/dota2/Froglings'},[catalog[0],{...catalog[1],liquipedia_url:'https://liquipedia.net/dota2/Froglings'}]).fixtures.length,0);
+ assert.equal(resolve({name:'1w'},[catalog[0],{...catalog[1],aliases:['1w']}]).fixtures.length,0);
+ assert.equal(resolve({name:'1w Team'},[{...catalog[0],id:'999'},catalog[1]]).fixtures.length,0);
+ const old=resolve({name:'1w Team'},[catalog[1]]);
+ assert.equal(old.rejected.length,1);
+ const replay=parseHaglundSchedule(old.rejected.map(x=>x.row),now,catalog);
+ assert.equal(replay.fixtures[0].provider_id,'test-fixture:01');
+ assert.equal(parseHaglundSchedule([old.rejected[0].row,old.rejected[0].row],now,catalog).fixtures.length,1);
+});
 
 test('canonical mapping contains eight distinct verified Valve identities and no LEGION alias', () => {
   assert.equal(new Set(TRACKED_SCHEDULE_TEAMS.map(t => t.id)).size, 8);

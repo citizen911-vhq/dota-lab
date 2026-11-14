@@ -18,10 +18,11 @@ const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){
 export default {async fetch(r){try{const path=new URL(r.url).pathname;if(path==='/run')return Response.json(await runAnalysis(await r.json()));if(path==='/ranking')return Response.json(await readTeamRanking());return Response.json(await readDashboard());}catch(e){return Response.json({error:e.message},{status:500});}}};`;
 const built=await build({stdin:{contents:worker,resolveDir:process.cwd(),loader:'ts'},bundle:true,write:false,format:'esm',platform:'browser',external:['cloudflare:workers'],logLevel:'silent'});
 let requests=[];
-const mf=new Miniflare({modules:true,compatibilityDate:'2026-05-15',script:built.outputFiles[0].text,d1Databases:{DB:'expansion-test-only'},bindings:{AUTO_PAPER_ENABLED:'false'},outboundService:async r=>{
+const mf=new Miniflare({modules:true,compatibilityDate:'2026-05-15',script:built.outputFiles[0].text,d1Databases:{DB:'expansion-test-only'},bindings:{ODDSLINK_API_KEY:'test-only-key'},outboundService:async r=>{
  const u=new URL(r.url);requests.push(u.pathname);
  if(u.hostname==='raw.githubusercontent.com')return Response.json([{id:99,name:'7.40',date:'2026-09-01T00:00:00Z'}]);
  if(u.hostname==='dota.haglund.dev')return Response.json(fixtures);
+ if(u.hostname==='oddslink.app')return Response.json([],{headers:{'x-requests-remaining':'999'}});
  assert.equal(u.hostname,'api.opendota.com');
  return Response.json(u.pathname==='/api/teams'?directory:[]);
 }});
@@ -48,12 +49,24 @@ try{
  assert.ok(second.forecasts_added>0,JSON.stringify(second));
  const dashboard=await call('/dashboard');
  assert.ok(dashboard.forecasts.some(f=>f.team_a_id==='901'));
- assert.ok(!dashboard.forecasts.some(f=>f.team_a_id==='908'));
+ assert.ok(dashboard.forecasts.some(f=>f.team_a_id==='908'),'verified opponent is forecast even outside TOP-20');
+ ranking=await call('/ranking');
+ assert.equal(ranking.expansion.active_ids.includes('908'),false,'analysis does not promote the opponent');
+ assert.ok(ranking.expansion.analysis_team_ids.includes('908'));
  const count=(await db.prepare('SELECT COUNT(*) AS n FROM dota_forecasts').first()).n;
  const third=await call('/run',{});assert.equal(third.forecasts_added,0,JSON.stringify(third));
  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM dota_forecasts').first()).n,count);
  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM dota_paper_bets').first()).n,0);
- ranking=await call('/ranking');assert.equal(ranking.ranking_history.length,3);
+ ranking=await call('/ranking');assert.equal(ranking.ranking_history.length,1,'unchanged results do not create ranking snapshots');
  assert.ok(requests.includes('/api/teams/900/matches'),'promoted teams must be collected next cycle');
- console.log('TOP-20 Workers + D1 passed: promotion cap, queue, alias correction, forecast gating, duplicate-free retry, persisted ranking history, no live bets.');
+ const oddsBefore=requests.filter(path=>path.includes('/sports/dota2/odds')).length;
+ const forced=await call('/run',{force_refresh:true});
+ assert.notEqual(forced.status,'failed',JSON.stringify(forced));
+ assert.equal(forced.paper.cached,false);
+ assert.equal(forced.paper.coverage.events_received,0);
+ assert.equal(requests.filter(path=>path.includes('/sports/dota2/odds')).length,oddsBefore+1,'full analysis forwards manual refresh to odds');
+ await call('/run',{});
+ assert.equal(requests.filter(path=>path.includes('/sports/dota2/odds')).length,oddsBefore+1,'automatic runs retain their cooldown');
+ assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM dota_paper_bets').first()).n,0);
+ console.log('TOP-20 Workers + D1 passed: independent opponent analysis, promotion cap, queue, alias correction, forecast gating, duplicate-free retry, persisted ranking history, no live bets.');
 }finally{await mf.dispose();}

@@ -245,7 +245,7 @@ export function paperDashboard(settings: PaperSettings, quotes: OddsQuote[], bet
     if (observation) invariant(Date.parse(observation.recorded_utc) >= Date.parse(bet.placed_utc), 'Результат не может предшествовать регистрации ставки.');
     const status = settle(forecast, observation).status;
     const cash = cashflow(bet, status);
-    return { ...bet, forecast, quote, status,
+    return { ...bet, forecast, quote, status, series_score: observation?.series_score ?? null, series_winner: observation?.series_winner ?? null,
       payout: cash.payout == null ? null : units(cash.payout), profit: cash.profit == null ? null : units(cash.profit),
       settled_utc: settlementTimes.get(bet.bet_id) ?? null,
       observation_id: relevantObservationIds.get(bet.bet_id) ?? null,

@@ -1,8 +1,10 @@
 import type {MatchupAnalysis} from '@/lib/dota-analysis-types';
 
 export interface Forecast {
+  pool_warnings?: string[];
   odds_quote?: {decimal_odds:number;bookmaker:string;observed_utc:string;source_url:string}|null;
   forecast_id: string; fixture_id: string; team_a: string; team_b: string;
+  team_a_id?: string | number; team_b_id?: string | number;
   scheduled_start_utc: string; created_utc: string; data_cutoff_utc?: string; cohort_date?: string;
   best_of?: 2 | 3;
   label: string; probability: number; market: string; family: string; selected: boolean;
@@ -13,6 +15,7 @@ export interface Forecast {
   patch_id?: string; matchup_analysis?: MatchupAnalysis; roster_warnings?: string[];
 }
 export interface Observation {
+  series_winner?: 'a' | 'b' | null;
   fixture_id: string; observation_id: string; recorded_utc: string;
   series_score?: number[] | null; series_void?: boolean; map1_void?: boolean;
   map1?: { kills_a?: number; kills_b?: number; duration_seconds?: number; match_id?: string } | null;
